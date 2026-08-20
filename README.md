@@ -111,8 +111,8 @@ npm run test:dry-mount       # 干挂载（临时 cordis 上下文端到端验�
      "bundle": { "patch": "./cordis.patch.yml" },
      "client": {
        "inject": [
+         "@deepseek-ai/dsh-client-runtime",
          "@deepseek-ai/dsh-client-connection",
-         "@deepseek-ai/dsh-client-locale",
          "@deepseek-ai/dsh-client-ui-slots",
          "@deepseek-ai/dsh-client-ui-settings"
        ],

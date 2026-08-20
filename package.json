@@ -2,6 +2,10 @@
   "name": "dsh-sandbox-allowlist",
   "version": "0.1.0",
   "description": "DSH sandbox extension: configurable trusted writable roots outside the workspace, for both sandboxed CLI commands and the write/edit tools. 为 DSH 默认沙箱增加可配置的「沙箱授权目录」，允许工作区外的受信修改。",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/developerdh/dsh-sandbox-allowlist.git"
+  },
   "type": "module",
   "exports": {
     ".": "./lib/policy.mjs",
@@ -20,7 +24,17 @@
     "test:dry-mount": "node test/dry-mount.mjs",
     "test:patch": "node test/validate-patch.mjs",
     "typecheck": "tsc --noEmit",
-    "build:client": "tsc -p tsconfig.build.json && tsdown"
+    "build:client": "tsc -p tsconfig.build.json && tsdown",
+    "prepublishOnly": "npm test"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-app-boot": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-fs-sandbox": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-sandbox-local": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-sandbox-policy": "^0.1.0-rc.7",
+    "tsdown": "^0.7.0",
+    "typescript": "^5.9.0"
   },
   "dsh": {
     "bundle": {
