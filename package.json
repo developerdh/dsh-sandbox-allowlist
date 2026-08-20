@@ -1,0 +1,50 @@
+{
+  "name": "dsh-sandbox-allowlist",
+  "version": "0.1.0",
+  "description": "DSH sandbox extension: configurable trusted writable roots outside the workspace, for both sandboxed CLI commands and the write/edit tools. 为 DSH 默认沙箱增加可配置的「沙箱授权目录」，允许工作区外的受信修改。",
+  "type": "module",
+  "exports": {
+    ".": "./lib/policy.mjs",
+    "./client": "./lib/client.js",
+    "./lib/*": "./lib/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node test/test.mjs",
+    "test:dry-mount": "node test/dry-mount.mjs",
+    "test:patch": "node test/validate-patch.mjs",
+    "typecheck": "tsc --noEmit",
+    "build:client": "tsc -p tsconfig.build.json && tsdown"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "sandbox",
+    "allowlist"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.11"
+  }
+}

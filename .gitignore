@@ -1,0 +1,15 @@
+# Node
+# node_modules 是 dsh 依赖回退目录的 junction（本地调试用），绝不能入库
+node_modules/
+
+# Pack artifacts
+*.tgz
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Editor noise
+.idea/
+.vscode/
+*.swp

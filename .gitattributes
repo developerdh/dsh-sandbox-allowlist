@@ -1,0 +1,6 @@
+# Normalize line endings for cross-platform collaboration (GitHub-ready)
+* text=auto
+
+# Shell/executable scripts
+*.ps1 text eol=crlf
+*.sh text eol=lf
