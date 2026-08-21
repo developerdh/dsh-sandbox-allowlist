@@ -36,12 +36,10 @@ export const SETTINGS_NAMESPACE = 'sandbox-allowlist'
 
 /** 卡片 A 里的克制式安全警示 callout（承载粗体「无审批」）。 */
 export const CALL_WARN_DIRS =
-  '安全警示：授权目录会被沙箱内的 AI 代理<b>无审批</b>写入（工作区之外）。这放宽了沙箱边界——' +
-  '只添加完全信任、已存在且归当前用户所有的目录，别把非受信位置加进来。'
+  '安全警示：授权目录会被沙箱内的 AI 代理<b>无审批</b>写入（工作区之外），请勿配置存储重要文件的目录。'
 
 export const DIRS_HINT =
-  '支持通配符：D:\\Shared\\**（子树）、D:\\Data\\*（一级子目录）、D:\\Work\\202?（单字符）。' +
-  '只添加完全信任、已存在且归当前用户所有的目录。'
+  '支持通配符：D:\\Shared\\**（子树）、D:\\Data\\*（一级子目录）、D:\\Work\\202?（单字符）。'
 
 export const DIRS_VALIDATE_HINT = '校验规则：Windows 路径或通配符；非法条目会在保存前标红提示，不会静默丢弃。'
 
@@ -658,8 +656,7 @@ export function makeAllowlistSection(scope: any) {
       <section className="sabx-section" aria-labelledby="sabx-section-title">
         <h2 className="sabx-section-heading" id="sabx-section-title">沙箱授权</h2>
         <p className="sabx-section-intro">
-          配置哪些目录与命令可在工作区之外被沙箱内的 AI 代理放行。页面所作修改在
-          <b>保存</b>后立即生效（设置文档热加载），无需重启 dsh。
+          配置沙箱内的目录操作权限及命令执行权限，保存后立即生效。
         </p>
         <DirsCard />
         <CommandsCard />

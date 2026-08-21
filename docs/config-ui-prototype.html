@@ -487,8 +487,7 @@
   <section class="section" aria-labelledby="sec-title">
     <h1 class="section-heading" id="sec-title">沙箱授权</h1>
     <p class="section-intro">
-      配置哪些目录与命令可在工作区之外被沙箱内的 AI 代理放行。页面所作修改在
-      <b>保存</b>后立即生效（设置文档热加载），无需重启 dsh。
+      配置沙箱内的目录操作权限及命令执行权限，保存后立即生效。
     </p>
 
     <!-- ===================== 卡片 A：授权目录 ===================== -->
@@ -507,8 +506,7 @@
       <div class="card-body">
         <div class="callout-warn" style="margin-bottom:6px">
           <span class="dot"></span>
-          <span>安全警示：授权目录会被沙箱内的 AI 代理<b>无审批</b>写入（工作区之外）。这放宽了沙箱边界——
-            只添加完全信任、已存在且归当前用户所有的目录，别把非受信位置加进来。</span>
+          <span>安全警示：授权目录会被沙箱内的 AI 代理<b>无审批</b>写入（工作区之外），请勿配置存储重要文件的目录。</span>
         </div>
         <div class="field">
           <div class="field-head">
@@ -517,7 +515,7 @@
           </div>
           <p class="field-hint">
             支持通配符：<code>D:\Shared\**</code>（子树）、<code>D:\Data\*</code>（一级子目录）、
-            <code>D:\Work\202?</code>（单字符）。只添加完全信任、已存在且归当前用户所有的目录。
+            <code>D:\Work\202?</code>（单字符）。
           </p>
           <div class="dir-list">
             <div class="dir-row">
