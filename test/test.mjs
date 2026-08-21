@@ -21,7 +21,19 @@ import {
   patternToRegExp,
   expandTrustedRoots,
 } from '../lib/patterns.mjs'
-import AllowlistPolicyService, { SETTINGS_NAMESPACE, AllowlistSettingsSchema } from '../lib/policy.mjs'
+import {
+  normalizeCommand,
+  patternToCommandRegExp,
+  compileCommandRules,
+  resolveCommandAction,
+  validateCommandRule,
+} from '../lib/command-rules.mjs'
+import {
+  decideCommand,
+  dispositionForAction,
+  denyReason,
+} from '../lib/command-gate.mjs'
+import AllowlistPolicyService, { SETTINGS_NAMESPACE, AllowlistSettingsSchema, CommandRuleSchema, CommandSettingsSchema } from '../lib/policy.mjs'
 import AllowlistFileSystem from '../lib/fs.mjs'
 import AllowlistSandboxProvider from '../lib/provider.mjs'
 import { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
@@ -41,6 +53,78 @@ assert.ok(!reDoubleStar.test('D:\\SharedOther\\a'))
 const reSingleStar = patternToRegExp('D:\\Data\\logs\\*')
 assert.ok(reSingleStar.test('D:\\Data\\logs\\x'))
 assert.ok(!reSingleStar.test('D:\\Data\\logs\\x\\y'))
+
+// ── command rules ──────────────────────────────────────────────────────────
+// normalizing collapses surrounding and inner whitespace; ignores casing on win32
+assert.equal(normalizeCommand('  git   status  '), 'git status')
+assert.equal(normalizeCommand(''), '')
+assert.equal(normalizeCommand(null), '')
+
+// wildcard translation: `*` any run, `?` one char, anchored
+const gitAny = patternToCommandRegExp('git *')
+assert.ok(gitAny.test('git status --porcelain'))
+assert.ok(gitAny.test('git commit -m hi'))
+assert.ok(!gitAny.test('git'))
+const gitCommit = patternToCommandRegExp('git commit *')
+assert.ok(gitCommit.test('git commit -m hi'))
+assert.ok(!gitCommit.test('git status'))
+assert.ok(patternToCommandRegExp('git statu?').test('git status'))
+
+// last-match-wins with tool-aware rules
+const rules = [
+  { tool: 'bash', pattern: 'git *', action: 'allow' },
+  { tool: 'pwsh', pattern: 'git *', action: 'ask' },
+  { pattern: 'rm -rf *', action: 'deny' }, // tool omitted ⇒ all tools
+  { tool: 'bash', pattern: 'git push *', action: 'deny' }, // more specific, later
+]
+const match = compileCommandRules(rules)
+assert.equal(match('bash', 'git status'), 'allow')
+assert.equal(match('pwsh', 'git status'), 'ask')
+assert.equal(match('bash', 'git push origin main'), 'deny') // last match wins
+assert.equal(match('bash', 'rm -rf /tmp/x'), 'deny')        // tool-omitted applies to bash
+assert.equal(match('pwsh', 'rm -rf /tmp/x'), 'deny')        // and to pwsh
+assert.equal(match('bash', 'npm test'), null)               // no match
+
+// resolveCommandAction applies the configured fallback (delegate keeps behavior)
+assert.equal(resolveCommandAction(rules, 'bash', 'npm test', 'delegate'), 'delegate')
+assert.equal(resolveCommandAction(rules, 'bash', 'npm test', 'ask'), 'ask')
+assert.equal(resolveCommandAction([], 'bash', 'npm test', 'delegate'), 'delegate')
+
+// malformed rules are skipped, never thrown
+assert.equal(validateCommandRule({ pattern: 'git *', action: 'allow' }), null)
+assert.ok(validateCommandRule({ pattern: 'git *', action: 'bogus' }) !== null)
+assert.ok(validateCommandRule({ pattern: '' }) !== null)
+assert.ok(validateCommandRule({ tool: 'cmd', pattern: 'x', action: 'allow' }) !== null)
+
+// gate decision → PreToolDecision-shaped result, with delegate sentinel
+assert.equal(decideCommand({ rules, default: 'delegate' }, 'bash', 'npm test'), 'delegate')
+assert.deepEqual(decideCommand({ rules }, 'bash', 'git status'), { kind: 'allow' })
+assert.deepEqual(decideCommand({ rules }, 'bash', 'git push origin main'), { kind: 'deny' })
+assert.deepEqual(decideCommand({ rules, default: 'ask' }, 'bash', 'npm test'), { kind: 'ask' })
+assert.deepEqual(decideCommand({ rules }, 'bash', 'GIT STATUS'), { kind: 'allow' }) // win32 case-insensitive
+assert.equal(dispositionForAction('allow').kind, 'allow')
+assert.equal(dispositionForAction('deny').kind, 'deny')
+assert.equal(dispositionForAction('ask').kind, 'ask')
+assert.equal(dispositionForAction('bogus'), 'delegate')
+assert.match(denyReason('bash', 'rm -rf /'), /deny rule/)
+
+// command rule / settings schemas validate and reject junk
+{
+  const ruleResult = CommandRuleSchema['~standard'].validate({ pattern: 'git *', action: 'allow' })
+  assert.ok('value' in ruleResult, 'command rule validates: ' + JSON.stringify(ruleResult.issues))
+  assert.equal(ruleResult.value.pattern, 'git *')
+  const toolResult = CommandRuleSchema['~standard'].validate({ tool: 'bash', pattern: 'git *', action: 'allow' })
+  assert.ok('value' in toolResult, 'rule with tool validates')
+  const badAction = CommandRuleSchema['~standard'].validate({ pattern: 'git *', action: 'go' })
+  assert.ok('issues' in badAction, 'rule rejects an unknown action')
+  const badTool = CommandRuleSchema['~standard'].validate({ tool: 'cmd', pattern: 'x', action: 'allow' })
+  assert.ok('issues' in badTool, 'rule rejects an unknown tool')
+
+  const cmds = CommandSettingsSchema['~standard'].validate({ default: 'ask', rules: [{ pattern: 'git *', action: 'allow' }] })
+  assert.ok('value' in cmds, 'commands settings validates')
+  assert.equal(cmds.value.default, 'ask')
+  assert.equal(cmds.value.rules.length, 1)
+}
 
 // ── filesystem expansion ───────────────────────────────────────────────────
 const base = mkdtempSync(join(tmpdir(), 'dsh-allowlist-test-'))
@@ -88,11 +172,14 @@ try {
     mode: 'workspace-write',
     workspaceRoot: base,
     allowedDirs: [join(shared, '**')],
+    commands: { default: 'ask', rules: [{ pattern: 'git *', action: 'allow' }] },
   })
   assert.ok('value' in result, 'config validates: ' + JSON.stringify(result.issues))
   const parsed = result.value
   assert.equal(parsed.mode, 'workspace-write')
   assert.deepEqual(parsed.allowedDirs, [join(shared, '**')])
+  assert.equal(parsed.commands.rules.length, 1, 'commands config is parsed')
+  assert.equal(parsed.commands.default, 'ask')
   assert.equal(parsed.strict, false, 'defaults are applied')
 
   // Config schema: rejects junk
@@ -103,9 +190,11 @@ try {
   assert.equal(SETTINGS_NAMESPACE, 'sandbox-allowlist')
   const settingsResult = AllowlistSettingsSchema['~standard'].validate({
     allowedDirs: ['D:\\Shared\\**'],
+    commands: { default: 'delegate', rules: [{ pattern: 'rm -rf *', action: 'deny' }] },
   })
   assert.ok('value' in settingsResult, 'settings schema validates')
   assert.deepEqual(settingsResult.value.allowedDirs, ['D:\\Shared\\**'])
+  assert.equal(settingsResult.value.commands.rules.length, 1, 'commands section validates')
   // The settings page renders schema.toJSON() — the warning must ride the wire
   const wire = JSON.stringify(AllowlistSettingsSchema.toJSON())
   assert.ok(wire.includes('安全警示'), 'settings schema carries the warning copy on the wire')

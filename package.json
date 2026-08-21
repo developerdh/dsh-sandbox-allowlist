@@ -23,9 +23,11 @@
     "test": "node test/test.mjs",
     "test:dry-mount": "node test/dry-mount.mjs",
     "test:patch": "node test/validate-patch.mjs",
+    "test:command-gate": "node test/verify-command-gate.mjs",
+    "test:client": "node test/verify-client-editor.mjs",
     "typecheck": "tsc --noEmit",
     "build:client": "tsc -p tsconfig.build.json && tsdown",
-    "prepublishOnly": "npm test"
+    "prepublishOnly": "npm test && npm run test:command-gate && npm run test:client"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

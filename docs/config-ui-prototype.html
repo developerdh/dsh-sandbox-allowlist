@@ -1,0 +1,863 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-ds-dark-theme>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>沙箱授权 · 配置界面高保真原型（v5）</title>
+<style>
+  /* ============================================================================
+     dsw 设计令牌（深色主题）——原型自包含声明，供独立预览。
+     实施时这些变量名原样映射到 dsh 运行时的 --dsw-alias-* / --dsw-specific-*
+     令牌，结构遵循 dsh 官方 settings UI（dsh-client-ui-settings-plugins）。
+     ============================================================================ */
+  :root {
+    --dsw-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter",
+        Roboto, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --dsw-font-family-code: "SFMono-Regular", ui-monospace, "Cascadia Code",
+        consolas, "Courier New", monospace;
+
+    /* 表面层级 */
+    --dsw-alias-bg-base: #141416;              /* 页面底 */
+    --dsw-alias-bg-layer-2: #1b1b1f;           /* 展开卡片 */
+    --dsw-alias-bg-layer-3: #222227;           /* 卡片 / 输入面 */
+    --dsw-alias-bg-module-platform: #2a2a30;   /* 徽章 / 胶囊 */
+    --dsw-specific-input-major: #26262b;       /* 聚焦输入底 */
+
+    /* 边框 */
+    --dsw-alias-border-l1: rgba(255, 255, 255, 0.07);
+    --dsw-alias-border-l2: rgba(255, 255, 255, 0.11);
+    --dsw-alias-border-l3: rgba(255, 255, 255, 0.18);
+    --dsw-alias-lab-dimmed: #8a8f99;
+
+    /* 文本 */
+    --dsw-alias-label-primary: #f2f3f5;
+    --dsw-alias-label-secondary: #c9ccd0;
+    --dsw-alias-label-tertiary: #9ca1a9;
+    --dsw-alias-label-caption: #6d737c;
+
+    /* 语义色 */
+    --dsw-alias-brand-primary: #4d6bfe;              /* 品牌 / 焦点 / 主操作 */
+    --dsw-alias-state-success-primary: #3fb950;      /* allow */
+    --dsw-alias-state-warn-primary: #d9a53f;         /* ask */
+    --dsw-alias-state-error-primary: #f85149;        /* deny / 错误 */
+    --dsw-alias-interactive-bg-hover: rgba(255, 255, 255, 0.07);
+    --dsw-alias-interactive-bg-hover-solid: #2c2c33;
+
+    --dsw-shadow-lv2: 0 6px 24px rgba(0, 0, 0, 0.35);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--dsw-alias-bg-base);
+    color: var(--dsw-alias-label-primary);
+    font-family: var(--dsw-font-family);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* 页面容器：模拟 dsh 设置页内容区 */
+  .page { max-width: 820px; margin: 0 auto; padding: 40px 28px 96px; }
+
+  /* 顶部说明条（原型用途说明，非产品元素） */
+  .proto-note {
+    border: 1px dashed var(--dsw-alias-border-l2);
+    background: var(--dsw-alias-bg-layer-3);
+    border-radius: 12px;
+    padding: 12px 16px;
+    color: var(--dsw-alias-label-tertiary);
+    font-size: 12px;
+    line-height: 1.6;
+    margin-bottom: 24px;
+  }
+  .proto-note b { color: var(--dsw-alias-label-primary); }
+
+  /* ============================================================================
+     dsh 官方设置分节结构（.pbvGtq_section）
+     ============================================================================ */
+  .section {
+    max-width: 760px;
+    color: var(--dsw-alias-label-primary);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .section-heading { margin: 0; font-size: 18px; font-weight: 600; }
+  .section-intro  {
+    color: var(--dsw-alias-label-tertiary);
+    margin: 0 0 4px;
+    font-size: 13px;
+    line-height: 1.6;
+    max-width: 640px;
+  }
+
+  /* ============================================================================
+     配置卡片（.YyYd_a_card / .YyYd_a_*）
+     修复①：收起态真正隐藏卡片主体——点击标题折叠/展开不再只是变色旋转箭头。
+     ============================================================================ */
+  .card-openable {
+    border: 1px solid var(--dsw-alias-border-l2);
+    background: var(--dsw-alias-bg-layer-3);
+    border-radius: 12px;
+    list-style: none;
+    transition: border-color .16s, background .16s;
+  }
+  .card-openable:hover { border-color: var(--dsw-alias-lab-dimmed); }
+  .card-openable.is-open { background: var(--dsw-alias-bg-layer-2); border-color: var(--dsw-alias-lab-dimmed); }
+  .card-openable + .card-openable { margin-top: 12px; }
+  /* 修复①：未展开时隐藏主体（头部仍可见，含未保存徽章与计数） */
+  .card-openable:not(.is-open) .card-body { display: none; }
+
+  .card-header {
+    appearance: none;
+    width: 100%;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    background: transparent;
+    border: 0;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 16px;
+  }
+  .card-header:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; border-radius: 12px; }
+  .card-head-text { display: flex; flex-direction: column; flex: 1; gap: 3px; min-width: 0; }
+  .card-name { color: var(--dsw-alias-label-primary); font-size: 15px; font-weight: 600; line-height: 1.4; }
+  .card-name .count { color: var(--dsw-alias-label-tertiary); font-weight: 400; font-size: 13px; margin-left: 8px; }
+  .card-desc { color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 1.5; }
+  .card-chevron {
+    color: var(--dsw-alias-label-tertiary);
+    flex: none;
+    width: 18px; height: 18px;
+    transition: transform .16s;
+  }
+  .card-openable.is-open .card-chevron { transform: rotate(180deg); }
+
+  /* 未保存修改徽章（.YyYd_a_pending） */
+  .pending {
+    white-space: nowrap;
+    background: var(--dsw-alias-bg-module-platform);
+    color: var(--dsw-alias-label-secondary);
+    border-radius: 999px;
+    flex: none;
+    padding: 1px 8px;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 17px;
+    display: none;
+  }
+  .card-openable.has-pending .pending { display: inline-block; }
+
+  /* 卡片主体 */
+  .card-body { border-top: 1px solid var(--dsw-alias-border-l2); margin: 0 16px; padding-bottom: 8px; }
+
+  /* ============================================================================
+     字段（.At1oFq_field / .At1oFq_*）
+     ============================================================================ */
+  .field { display: flex; flex-direction: column; gap: 6px; padding: 14px 0; }
+  .field + .field { border-top: 1px solid var(--dsw-alias-border-l2); }
+  .field-head { display: flex; align-items: center; gap: 8px; }
+  .field-label { min-width: 0; color: var(--dsw-alias-label-primary); flex: 1; font-size: 13px; font-weight: 500; line-height: 1.5; }
+  .field-reset {
+    font: inherit; color: var(--dsw-alias-label-secondary); cursor: pointer;
+    background: transparent; border: none; padding: 0; font-size: 12px; line-height: 1.5;
+  }
+  .field-reset:hover:not(:disabled) { color: var(--dsw-alias-label-primary); }
+  .field-hint { color: var(--dsw-alias-label-tertiary); margin: 0; font-size: 12px; line-height: 1.55; }
+  .field-invalid { color: var(--dsw-alias-state-error-primary); margin: 0; font-size: 12px; line-height: 1.5; }
+
+  .input, .select {
+    border: 1px solid var(--dsw-alias-border-l2);
+    background: var(--dsw-alias-bg-layer-3);
+    height: 34px;
+    font: inherit;
+    color: var(--dsw-alias-label-primary);
+    border-radius: 8px;
+    padding: 0 12px;
+    font-size: 13px;
+    line-height: 1.5;
+    width: 100%;
+  }
+  /* 修复②⑤：焦点只落在这一个控件上（输入框/下拉框自身高亮），
+     所在行的外部边框不再高亮 */
+  .input:focus-visible, .select:focus-visible {
+    border-color: var(--dsw-alias-brand-primary);
+    background: var(--dsw-specific-input-major);
+    outline: none;
+  }
+  .input:disabled, .select:disabled { color: var(--dsw-alias-label-tertiary); cursor: default; }
+  .select { cursor: pointer; }
+  .mono { font-family: var(--dsw-font-family-code); }
+
+  /* ============================================================================
+     动作按钮（.YyYd_a_save / .YyYd_a_discard）
+     ============================================================================ */
+  .btn {
+    appearance: none; font: inherit; cursor: pointer;
+    border: 1px solid transparent; border-radius: 8px;
+    padding: 5px 14px; font-size: 13px; line-height: 1.5;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+  .btn:disabled { opacity: .4; cursor: default; }
+  .btn-primary { background: var(--dsw-alias-label-primary); color: var(--dsw-alias-bg-base); }
+  .btn-primary:hover:not(:disabled) { background: #ffffff; }
+  .btn-ghost { border-color: var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); background: transparent; }
+  .btn-ghost:hover:not(:disabled) { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-lab-dimmed); }
+
+  /* 修复⑦：统一的更小图标按钮（✕ 删除），目录行与规则行共用 */
+  .icon-btn {
+    appearance: none; font: inherit; cursor: pointer;
+    border: 1px solid transparent; border-radius: 6px;
+    width: 22px; height: 22px; flex: none;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--dsw-alias-label-tertiary);
+    background: transparent;
+    padding: 0;
+  }
+  .icon-btn:hover { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-interactive-bg-hover); }
+  .icon-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+  .icon-btn svg { width: 12px; height: 12px; display: block; }
+
+  /* ============================================================================
+     命令规则：表格行（.At1oFq_* 之上的结构化表格布局）
+     修复⑦：工具列/动作列不再设死宽度，行内留白收紧，长命令输入不再与
+     后面的权限分段重叠。
+     ============================================================================ */
+  .rules-table { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+  .rule-row {
+    display: flex; align-items: center; gap: 8px;
+    border: 1px solid var(--dsw-alias-border-l1);
+    background: var(--dsw-alias-bg-layer-3);
+    border-radius: 8px;
+    padding: 7px 8px;
+  }
+  /* 修复⑤：规则行自身不随焦点高亮（与授权目录行一致），只高亮输入框 */
+  .rule-tool { flex: 0 0 104px; min-width: 0; }
+  .rule-pattern { flex: 1; min-width: 0; }
+  .rule-pattern .mono { width: 100%; }
+  .rule-action { flex: 0 0 auto; }
+  .rule-remove { flex: 0 0 22px; }
+
+  /* 修复⑥（v5）：工具下拉 = 自绘下拉组件（胶囊触发按钮 + 自绘弹出菜单）。
+     原生 <select> 弹开的面板是浏览器/系统渲染的，CSS 无法定制（永远方方正正），
+     因此改为自绘菜单——面板的圆角、边框、阴影、悬停与选中态全部可控。 */
+  .tool-picker { position: relative; }
+  .tool-picker-trigger {
+    appearance: none;
+    width: 100%;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--dsw-alias-border-l2);
+    background: var(--dsw-alias-bg-layer-3);
+    color: var(--dsw-alias-label-secondary);
+    border-radius: 999px;
+    height: 32px;
+    padding: 0 8px 0 12px;
+    font-family: var(--dsw-font-family-code);
+    font-size: 12px;
+    line-height: 1.5;
+    cursor: pointer;
+    transition: border-color .14s, background .14s;
+  }
+  .tool-picker-trigger:hover { border-color: var(--dsw-alias-lab-dimmed); }
+  .tool-picker-trigger.is-any { color: var(--dsw-alias-label-tertiary); border-style: dashed; }
+  .tool-picker-trigger:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+  .tool-picker-value {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+  }
+  .tool-picker-chevron {
+    flex: none;
+    width: 12px; height: 12px;
+    color: var(--dsw-alias-label-tertiary);
+    transition: transform .14s;
+  }
+  .tool-picker.is-open .tool-picker-chevron { transform: rotate(180deg); }
+  .tool-picker.is-open .tool-picker-trigger { border-color: var(--dsw-alias-lab-dimmed); background: var(--dsw-alias-bg-module-platform); }
+  /* 自绘弹出菜单：圆角 + 分层表面 + 阴影，与 dsh 其它浮层一致 */
+  .tool-picker-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 30;
+    min-width: 100%;
+    padding: 4px;
+    background: var(--dsw-alias-bg-layer-2);
+    border: 1px solid var(--dsw-alias-border-l2);
+    border-radius: 10px;
+    box-shadow: var(--dsw-shadow-lv2);
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .tool-picker-menu[hidden] { display: none; }
+  .tool-picker-option {
+    appearance: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    border: 0;
+    background: transparent;
+    color: var(--dsw-alias-label-secondary);
+    font-family: var(--dsw-font-family-code);
+    font-size: 12px;
+    line-height: 1.5;
+    border-radius: 6px;
+    padding: 6px 8px;
+    cursor: pointer;
+    text-align: left;
+  }
+  .tool-picker-option:hover { background: var(--dsw-alias-interactive-bg-hover); }
+  .tool-picker-option.is-selected { color: var(--dsw-alias-label-primary); font-weight: 600; }
+  .tool-picker-check { margin-left: auto; width: 12px; height: 12px; color: var(--dsw-alias-state-success-primary); opacity: 0; }
+  .tool-picker-option.is-selected .tool-picker-check { opacity: 1; }
+  /* 菜单贴合触发按钮宽度（列宽 104px 时菜单同宽） */
+  .rule-tool .tool-picker-menu { width: 104px; }
+
+  /* ============================================================================
+     动作胶囊选择器（allow / ask / deny 语义色）
+     修复④⑦：选中态增强（实底 + 内描边 + 加粗，语义色文字）；
+     三段间距收紧；高度对齐输入框（34px）。
+     ============================================================================ */
+  .seg {
+    display: inline-flex;
+    border: 1px solid var(--dsw-alias-border-l2);
+    border-radius: 8px;
+    overflow: hidden;
+    height: 34px;
+    background: var(--dsw-alias-bg-layer-3);
+  }
+  .seg-item {
+    appearance: none; font: inherit; cursor: pointer;
+    background: transparent; border: 0; color: var(--dsw-alias-label-tertiary);
+    padding: 0 10px; font-size: 12px; line-height: 1.5;
+    display: inline-flex; align-items: center; gap: 5px;
+    transition: background .12s, color .12s;
+  }
+  .seg-item:hover:not([data-active="true"]) { background: var(--dsw-alias-interactive-bg-hover); }
+  .seg-item:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
+  /* 未选中 = 中性色（语义色只在选中时呈现，选谁一眼可辨） */
+  .seg-item[data-active="true"] {
+    font-weight: 700;
+  }
+  /* 修复④（v4 加强）：选中态 = 语义色浅底填充 + 语义色文字 + 语义色内描边 */
+  .seg-item[data-active="true"].is-allow {
+    background: rgba(63, 185, 80, 0.18);
+    color: var(--dsw-alias-state-success-primary);
+    box-shadow: inset 0 0 0 1px rgba(63, 185, 80, 0.42);
+  }
+  .seg-item[data-active="true"].is-ask {
+    background: rgba(217, 165, 63, 0.18);
+    color: var(--dsw-alias-state-warn-primary);
+    box-shadow: inset 0 0 0 1px rgba(217, 165, 63, 0.42);
+  }
+  .seg-item[data-active="true"].is-deny {
+    background: rgba(248, 81, 73, 0.18);
+    color: var(--dsw-alias-state-error-primary);
+    box-shadow: inset 0 0 0 1px rgba(248, 81, 73, 0.42);
+  }
+  .seg-item[data-active="true"]:not(.is-allow):not(.is-ask):not(.is-deny) {
+    background: var(--dsw-alias-interactive-bg-hover-solid);
+    color: var(--dsw-alias-label-primary);
+    box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l3);
+  }
+  /* 修复⑦：三个权限选项（allow|ask|deny）间距更小 */
+  .seg--compact .seg-item { padding: 0 7px; gap: 3px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+  .dot-allow { background: var(--dsw-alias-state-success-primary); }
+  .dot-ask   { background: var(--dsw-alias-state-warn-primary); }
+  .dot-deny  { background: var(--dsw-alias-state-error-primary); }
+
+  /* 添加行按钮 */
+  .add-row {
+    appearance: none; font: inherit; cursor: pointer;
+    border: 1px dashed var(--dsw-alias-border-l2);
+    background: transparent; color: var(--dsw-alias-label-secondary);
+    border-radius: 8px; padding: 7px 12px; font-size: 13px;
+    display: inline-flex; align-items: center; gap: 6px; align-self: flex-start;
+  }
+  .add-row:hover { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-lab-dimmed); background: var(--dsw-alias-interactive-bg-hover); }
+
+  /* 空态 */
+  .empty {
+    color: var(--dsw-alias-label-tertiary);
+    border: 1px dashed var(--dsw-alias-border-l2);
+    border-radius: 8px; padding: 20px; text-align: center; font-size: 13px;
+  }
+
+  /* 卡片页脚操作区（.YyYd_a_footer） */
+  .card-footer {
+    border-top: 1px solid var(--dsw-alias-border-l2);
+    display: flex; justify-content: flex-end; align-items: center; gap: 8px;
+    padding: 12px 0 4px; margin-top: 8px;
+  }
+  .card-error { min-width: 0; color: var(--dsw-alias-state-error-primary); flex: 1; margin: 0; font-size: 12px; line-height: 1.5; }
+
+  /* ============================================================================
+     授权目录：结构化条目列表（替代原朴素的逐行 textarea）
+     修复②：新增行图标改为绿色「＋」徽章；行边框不随焦点高亮。
+     ============================================================================ */
+  .dir-list { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+  .dir-row {
+    display: flex; align-items: center; gap: 10px;
+    border: 1px solid var(--dsw-alias-border-l1);
+    background: var(--dsw-alias-bg-layer-3);
+    border-radius: 8px; padding: 6px 8px 6px 12px;
+  }
+  .dir-row .input { height: 34px; }
+  .dir-icon {
+    color: var(--dsw-alias-label-tertiary);
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px; height: 20px;
+  }
+  /* 修复②：新增条目 = 绿色「＋」圆形徽章（替代 emoji 🆕） */
+  .dir-icon.is-new {
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: rgba(63, 185, 80, 0.16);
+    color: var(--dsw-alias-state-success-primary);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+  }
+  .dir-hint-inline { color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 1.5; }
+
+  /* 安全警示（克制式 callout，仿 dsh warn 状态条：琥珀色点 + 简短文案） */
+  .callout-warn {
+    display: flex; align-items: flex-start; gap: 8px;
+    border: 1px solid var(--dsw-alias-border-l2);
+    background: var(--dsw-alias-bg-layer-3);
+    border-radius: 10px;
+    padding: 9px 12px;
+    color: var(--dsw-alias-label-secondary);
+    font-size: 12px; line-height: 1.6;
+  }
+  .callout-warn .dot {
+    margin-top: 6px; flex: none;
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--dsw-alias-state-warn-primary);
+  }
+
+  /* 提交/重置说明 */
+  .prose-sm { color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 1.55; margin: 0; }
+  .kbd {
+    font-family: var(--dsw-font-family-code); font-size: 11px;
+    border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-3);
+    border-radius: 5px; padding: 0 5px; color: var(--dsw-alias-label-secondary);
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- 原型用途说明 -->
+  <div class="proto-note">
+    <b>高保真原型 · 沙箱授权配置界面 v5</b> —— 重构「沙箱授权」设置分节，视觉与交互对齐
+    dsh 官方插件配置卡片（<code>dsh-client-ui-settings-plugins</code>)的设计语言
+    （dsw 令牌 / 分层表面 / 可折叠卡片 / 字段与动作按钮原语）与等宽命令视觉。
+    v3 修订：① 卡片折叠真正收起主体；② 目录新增行=绿色「＋」徽章、仅输入框焦点高亮；
+    ③ 去除命令规则描述中的外部参考文案；④⑦ 权限分段选择器可交互且选中态增强、选项间距
+    收紧、删除改为小图标按钮、规则行不再与权限分段重叠；⑤ 命令规则新增行与授权目录行
+    一致处理（不整体高亮）。
+    v4 微调：④ 权限选中态再加强——选中项 = 语义色浅底填充 + 语义色文字 + 粗体 + 内描边，
+    未选中项统一中性色；⑥ 工具下拉改为柔和胶囊样式；② 工具选项「任意」去掉括号。
+    v5（第三轮评审）：原生 <code>&lt;select&gt;</code> 弹开的面板由浏览器/系统渲染、
+    CSS 无法定制（永远方方正正），因此工具下拉改为<b>自绘下拉组件</b>——胶囊触发按钮
+    （箭头展开旋转）+ 自绘弹出菜单（圆角/分层表面/阴影/悬停/选中绿色对勾），展开态
+    与选中态完全可控。可交互演示：点击卡片标题展开/收起、点击工具胶囊展开下拉并选值、
+    点击任意分段选项切换选中。
+  </div>
+
+  <!-- ============= 设置分节（dsh 官方结构 .pbvGtq_section） ============= -->
+  <section class="section" aria-labelledby="sec-title">
+    <h1 class="section-heading" id="sec-title">沙箱授权</h1>
+    <p class="section-intro">
+      配置哪些目录与命令可在工作区之外被沙箱内的 AI 代理放行。页面所作修改在
+      <b>保存</b>后立即生效（设置文档热加载），无需重启 dsh。
+    </p>
+
+    <!-- ===================== 卡片 A：授权目录 ===================== -->
+    <article class="card-openable is-open has-pending" id="card-dirs">
+      <button class="card-header" type="button" onclick="toggleCard('card-dirs')">
+        <span class="card-head-text">
+          <span class="card-name">授权目录<span class="count">4 个目录 · 2 处未保存</span></span>
+          <span class="card-desc">允许沙箱内代理直接写入的工作区外目录；仍受文件沙箱约束，写入无需审批。</span>
+        </span>
+        <span class="pending">未保存修改</span>
+        <svg class="card-chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+
+      <div class="card-body">
+        <div class="callout-warn" style="margin-bottom:6px">
+          <span class="dot"></span>
+          <span>安全警示：授权目录会被沙箱内的 AI 代理<b>无审批</b>写入（工作区之外）。这放宽了沙箱边界——
+            只添加完全信任、已存在且归当前用户所有的目录，别把非受信位置加进来。</span>
+        </div>
+        <div class="field">
+          <div class="field-head">
+            <span class="field-label">工作区外的受信可写目录</span>
+            <button class="field-reset" type="button" onclick="resetDirs()">重置为默认</button>
+          </div>
+          <p class="field-hint">
+            支持通配符：<code>D:\Shared\**</code>（子树）、<code>D:\Data\*</code>（一级子目录）、
+            <code>D:\Work\202?</code>（单字符）。只添加完全信任、已存在且归当前用户所有的目录。
+          </p>
+          <div class="dir-list">
+            <div class="dir-row">
+              <span class="dir-icon" aria-hidden="true">📁</span>
+              <input class="input mono" value="C:\Users\<用户名>\.confluence-mcp" aria-label="授权目录 1" />
+              <button class="icon-btn" type="button" aria-label="删除"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+            </div>
+            <div class="dir-row">
+              <span class="dir-icon" aria-hidden="true">📁</span>
+              <input class="input mono" value="C:\Users\<用户名>\.jenkins-mcp" aria-label="授权目录 2" />
+              <button class="icon-btn" type="button" aria-label="删除"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+            </div>
+            <div class="dir-row">
+              <span class="dir-icon" aria-hidden="true">📁</span>
+              <input class="input mono" value="C:\Users\<用户名>\.rancher-mcp" aria-label="授权目录 3" />
+              <button class="icon-btn" type="button" aria-label="删除"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+            </div>
+            <!-- 修复②：新增行 = 绿色「＋」徽章，行边框不随焦点高亮 -->
+            <div class="dir-row">
+              <span class="dir-icon is-new" aria-hidden="true">＋</span>
+              <input class="input mono" value="D:\Work\2026" aria-label="授权目录 4（新）" placeholder="D:\Shared\Tools" />
+              <button class="icon-btn" type="button" aria-label="删除"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+            </div>
+          </div>
+          <button class="add-row" type="button" onclick="addDir()">
+            <span aria-hidden="true">＋</span> 添加目录
+          </button>
+          <p class="dir-hint-inline">
+            校验规则：Windows 路径或通配符；非法条目会在保存前标红提示，不会静默丢弃。
+          </p>
+        </div>
+
+        <div class="card-footer">
+          <p class="card-error" style="display:none">示例提示：目录 D:\Work\2026 不存在。</p>
+          <button class="btn btn-ghost" type="button">放弃修改</button>
+          <button class="btn btn-primary" type="button">保存目录</button>
+        </div>
+      </div>
+    </article>
+
+    <!-- ===================== 卡片 B：命令规则 ===================== -->
+    <article class="card-openable is-open" id="card-cmds">
+      <button class="card-header" type="button" onclick="toggleCard('card-cmds')">
+        <span class="card-head-text">
+          <!-- 修复③：去掉外部参考文案 -->
+          <span class="card-name">命令规则<span class="count">4 条规则</span></span>
+          <span class="card-desc">按「命令模式 + 动作」放行 / 询问 / 拦截 shell 命令。</span>
+        </span>
+        <span class="pending">未保存修改</span>
+        <svg class="card-chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+
+      <div class="card-body">
+        <div class="field">
+          <div class="field-head">
+            <span class="field-label">未命中任何规则时的默认动作</span>
+            <button class="field-reset" type="button">重置为默认</button>
+          </div>
+          <p class="field-hint">delegate 表示维持 dsh 现有行为（按需询问）；allow / ask / deny 会覆盖未命中命令的处理。</p>
+          <!-- 修复④：分段选择器可交互（点击切换选中），选中态增强 -->
+          <div class="seg" style="align-self:flex-start" data-seg>
+            <button class="seg-item" type="button" data-active="true">delegate</button>
+            <button class="seg-item is-allow" type="button" data-active="false"><span class="dot dot-allow"></span>allow</button>
+            <button class="seg-item is-ask" type="button" data-active="false"><span class="dot dot-ask"></span>ask</button>
+            <button class="seg-item is-deny" type="button" data-active="false"><span class="dot dot-deny"></span>deny</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-head">
+            <span class="field-label">放行规则（按顺序匹配，最后一条命中生效）</span>
+          </div>
+          <p class="field-hint">
+            pattern 支持 <code>*</code>（任意多个字符）与 <code>?</code>（单个字符）；
+            <code>git *</code> 忽略 <code>git</code> 后任意参数。allow=免询问（仍受文件沙箱约束）、
+            ask=弹审批、deny=拦截。
+          </p>
+
+          <div class="rules-table">
+            <!-- 规则行 1：bash / allow -->
+            <div class="rule-row">
+              <div class="rule-tool">
+                <div class="tool-picker" data-picker data-value="bash">
+                  <button class="tool-picker-trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="tool-picker-value">bash</span>
+                    <svg class="tool-picker-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </button>
+                  <div class="tool-picker-menu" role="listbox" hidden>
+                    <button class="tool-picker-option" type="button" data-value="" role="option" aria-selected="false">任意<svg class="tool-picker-check" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5l2.5 2.5L10 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    <button class="tool-picker-option is-selected" type="button" data-value="bash" role="option" aria-selected="true">bash<svg class="tool-picker-check" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5l2.5 2.5L10 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    <button class="tool-picker-option" type="button" data-value="pwsh" role="option" aria-selected="false">pwsh<svg class="tool-picker-check" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5l2.5 2.5L10 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                  </div>
+                </div>
+              </div>
+              <div class="rule-pattern">
+                <input class="input mono" value="git status *" aria-label="命令模式" />
+              </div>
+              <div class="rule-action">
+                <div class="seg seg--compact" data-seg>
+                  <button class="seg-item is-allow" type="button" data-active="true"><span class="dot dot-allow"></span>allow</button>
+                  <button class="seg-item is-ask" type="button" data-active="false"><span class="dot dot-ask"></span>ask</button>
+                  <button class="seg-item is-deny" type="button" data-active="false"><span class="dot dot-deny"></span>deny</button>
+                </div>
+              </div>
+              <button class="icon-btn rule-remove" type="button" aria-label="删除规则"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+            </div>
+            <!-- 规则行 2：pwsh / deny -->
+            <div class="rule-row">
+              <div class="rule-tool">
+                <div class="tool-picker" data-picker data-value="pwsh">
+                  <button class="tool-picker-trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="tool-picker-value">pwsh</span>
+                    <svg class="tool-picker-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </button>
+                  <div class="tool-picker-menu" role="listbox" hidden>
+                    <button class="tool-picker-option" type="button" data-value="" role="option" aria-selected="false">任意<svg class="tool-picker-check" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5l2.5 2.5L10 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    <button class="tool-picker-option" type="button" data-value="bash" role="option" aria-selected="false">bash<svg class="tool-picker-check" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5l2.5 2.5L10 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    <button class="tool-picker-option is-selected" type="button" data-value="pwsh" role="option" aria-selected="true">pwsh<svg class="tool-picker-check" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5l2.5 2.5L10 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                  </div>
+                </div>
+              </div>
+              <div class="rule-pattern">
+                <input class="input mono" value="Remove-Item -Recurse *" aria-label="命令模式" />
+              </div>
+              <div class="rule-action">
+                <div class="seg seg--compact" data-seg>
+                  <button class="seg-item is-allow" type="button" data-active="false"><span class="dot dot-allow"></span>allow</button>
+                  <button class="seg-item is-ask" type="button" data-active="false"><span class="dot dot-ask"></span>ask</button>
+                  <button class="seg-item is-deny" type="button" data-active="true"><span class="dot dot-deny"></span>deny</button>
+                </div>
+              </div>
+              <button class="icon-btn rule-remove" type="button" aria-label="删除规则"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+            </div>
+            <!-- 规则行 3：任意工具 / deny -->
+            <div class="rule-row">
+              <div class="rule-tool">
+                <div class="tool-picker" data-picker data-value="">
+                  <button class="tool-picker-trigger is-any" type="button" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="tool-picker-value">任意</span>
+                    <svg class="tool-picker-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </button>
+                  <div class="tool-picker-menu" role="listbox" hidden>
+                    <button class="tool-picker-option is-selected" type="button" data-value="" role="option" aria-selected="true">任意<svg class="tool-picker-check" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5l2.5 2.5L10 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    <button class="tool-picker-option" type="button" data-value="bash" role="option" aria-selected="false">bash<svg class="tool-picker-check" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5l2.5 2.5L10 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    <button class="tool-picker-option" type="button" data-value="pwsh" role="option" aria-selected="false">pwsh<svg class="tool-picker-check" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5l2.5 2.5L10 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                  </div>
+                </div>
+              </div>
+              <div class="rule-pattern">
+                <input class="input mono" value="rm -rf *" aria-label="命令模式" />
+              </div>
+              <div class="rule-action">
+                <div class="seg seg--compact" data-seg>
+                  <button class="seg-item is-allow" type="button" data-active="false"><span class="dot dot-allow"></span>allow</button>
+                  <button class="seg-item is-ask" type="button" data-active="false"><span class="dot dot-ask"></span>ask</button>
+                  <button class="seg-item is-deny" type="button" data-active="true"><span class="dot dot-deny"></span>deny</button>
+                </div>
+              </div>
+              <button class="icon-btn rule-remove" type="button" aria-label="删除规则"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+            </div>
+            <!-- 规则行 4：任意工具 / allow（新增，draft 示例） 修复⑤：不整行高亮 -->
+            <div class="rule-row">
+              <div class="rule-tool">
+                <div class="tool-picker" data-picker data-value="">
+                  <button class="tool-picker-trigger is-any" type="button" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="tool-picker-value">任意</span>
+                    <svg class="tool-picker-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </button>
+                  <div class="tool-picker-menu" role="listbox" hidden>
+                    <button class="tool-picker-option is-selected" type="button" data-value="" role="option" aria-selected="true">任意<svg class="tool-picker-check" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5l2.5 2.5L10 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    <button class="tool-picker-option" type="button" data-value="bash" role="option" aria-selected="false">bash<svg class="tool-picker-check" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5l2.5 2.5L10 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    <button class="tool-picker-option" type="button" data-value="pwsh" role="option" aria-selected="false">pwsh<svg class="tool-picker-check" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5l2.5 2.5L10 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                  </div>
+                </div>
+              </div>
+              <div class="rule-pattern">
+                <input class="input mono" value="ls -la *" aria-label="命令模式" placeholder="e.g. git *" />
+              </div>
+              <div class="rule-action">
+                <div class="seg seg--compact" data-seg>
+                  <button class="seg-item is-allow" type="button" data-active="true"><span class="dot dot-allow"></span>allow</button>
+                  <button class="seg-item is-ask" type="button" data-active="false"><span class="dot dot-ask"></span>ask</button>
+                  <button class="seg-item is-deny" type="button" data-active="false"><span class="dot dot-deny"></span>deny</button>
+                </div>
+              </div>
+              <button class="icon-btn rule-remove" type="button" aria-label="删除规则"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+            </div>
+          </div>
+
+          <button class="add-row" type="button" onclick="addRule()">
+            <span aria-hidden="true">＋</span> 添加规则
+          </button>
+          <p class="dir-hint-inline" style="margin-top:4px">
+            空 pattern 的行不会保存；工具留空任意时规则对所有 shell 工具生效。
+          </p>
+        </div>
+
+        <div class="card-footer">
+          <p class="card-error" style="display:none">示例提示：pattern 「rm -rf *」与 deny 组合不会被写入。</p>
+          <button class="btn btn-ghost" type="button">放弃修改</button>
+          <button class="btn btn-primary" type="button">保存命令规则</button>
+        </div>
+      </div>
+    </article>
+
+    <!-- 只读提示（可选，用于某些部署语义） -->
+    <p class="prose-sm">
+      提示：撤销授权后，已物化到目录 DACL 的 ACE 不会被自动移除（Windows）；如需清理请用
+      <span class="kbd">scripts/revoke.mjs</span>。注意不要在本分节内使用
+      <span class="kbd">pnpm install</span> 全局重装 web profile（github git+ssh 依赖会失败）。
+    </p>
+  </section>
+</div>
+
+<script>
+  // 修复①：卡片展开/收起（主体隐藏由 CSS :not(.is-open) 完成）。
+  function toggleCard(id) {
+    var el = document.getElementById(id);
+    el.classList.toggle('is-open');
+  }
+
+  // 修复④⑦：分段选择器交互（事件委托，静态与动态新增行都生效）。
+  // 修复⑥（v5）：自绘工具下拉——展开/选中/外点关闭，同样走事件委托。
+  document.addEventListener('click', function (event) {
+    var target = event.target;
+    var picker = target.closest ? target.closest('.tool-picker') : null;
+    if (picker) {
+      var trigger = target.closest('.tool-picker-trigger');
+      var option = target.closest('.tool-picker-option');
+      if (trigger) { togglePicker(picker); return; }
+      if (option) { selectPickerOption(picker, option); return; }
+      return; // 点击菜单空白处保持打开
+    }
+    var item = target.closest ? target.closest('.seg-item') : null;
+    if (item) {
+      var group = item.closest('.seg');
+      if (group) {
+        group.querySelectorAll('.seg-item').forEach(function (button) {
+          button.setAttribute('data-active', button === item ? 'true' : 'false');
+        });
+        // 原型联动：改动默认动作/规则动作时给所属卡片挂上「未保存修改」
+        var card = group.closest('.card-openable');
+        if (card) card.classList.add('has-pending');
+      }
+      return;
+    }
+    closeAllPickers(); // 点击其它区域关闭所有下拉
+  });
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape') closeAllPickers();
+  });
+
+  function togglePicker(picker) {
+    if (picker.classList.contains('is-open')) { closePicker(picker); return; }
+    closeAllPickers();
+    picker.classList.add('is-open');
+    picker.querySelector('.tool-picker-menu').hidden = false;
+    picker.querySelector('.tool-picker-trigger').setAttribute('aria-expanded', 'true');
+  }
+  function closePicker(picker) {
+    picker.classList.remove('is-open');
+    picker.querySelector('.tool-picker-menu').hidden = true;
+    picker.querySelector('.tool-picker-trigger').setAttribute('aria-expanded', 'false');
+  }
+  function closeAllPickers() {
+    document.querySelectorAll('.tool-picker.is-open').forEach(closePicker);
+  }
+  function selectPickerOption(picker, option) {
+    var value = option.getAttribute('data-value');
+    picker.setAttribute('data-value', value);
+    picker.querySelectorAll('.tool-picker-option').forEach(function (o) {
+      var selected = o === option;
+      o.classList.toggle('is-selected', selected);
+      o.setAttribute('aria-selected', selected ? 'true' : 'false');
+    });
+    picker.querySelector('.tool-picker-value').textContent = option.textContent.trim();
+    picker.querySelector('.tool-picker-trigger').classList.toggle('is-any', value === '');
+    closePicker(picker);
+    var card = picker.closest('.card-openable');
+    if (card) card.classList.add('has-pending');
+  }
+  function pickerOption(value, selected) {
+    return '<button class="tool-picker-option' + (selected ? ' is-selected' : '') + '" type="button" data-value="' + value + '" role="option" aria-selected="' + (selected ? 'true' : 'false') + '">' +
+      (value || '任意') + '<svg class="tool-picker-check" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5l2.5 2.5L10 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>';
+  }
+
+  // 修复②：授权目录新增行 = 绿色「＋」徽章；行不整体高亮，仅输入框聚焦时高亮。
+  function addDir() {
+    var list = document.querySelector('#card-dirs .dir-list');
+    var row = document.createElement('div');
+    row.className = 'dir-row';
+    row.innerHTML = '<span class="dir-icon is-new" aria-hidden="true">＋</span>' +
+      '<input class="input mono" placeholder="D:\\Shared\\Tools" aria-label="授权目录" />' +
+      '<button class="icon-btn" type="button" aria-label="删除">' + ICON_X + '</button>';
+    list.appendChild(row);
+    document.getElementById('card-dirs').classList.add('has-pending');
+  }
+
+  // 修复⑤：命令规则新增行与授权目录一致——不整行高亮，仅输入框聚焦时高亮。
+  function addRule() {
+    var table = document.querySelector('#card-cmds .rules-table');
+    var row = document.createElement('div');
+    row.className = 'rule-row';
+    row.innerHTML =
+      '<div class="rule-tool"><div class="tool-picker" data-picker data-value="">' +
+      '<button class="tool-picker-trigger is-any" type="button" aria-haspopup="listbox" aria-expanded="false">' +
+      '<span class="tool-picker-value">任意</span>' +
+      '<svg class="tool-picker-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>' +
+      '<div class="tool-picker-menu" role="listbox" hidden>' +
+      pickerOption('', true) + pickerOption('bash', false) + pickerOption('pwsh', false) +
+      '</div></div></div>' +
+      '<div class="rule-pattern"><input class="input mono" placeholder="git *" aria-label="命令模式"></div>' +
+      '<div class="rule-action"><div class="seg seg--compact" data-seg>' +
+      '<button class="seg-item is-allow" type="button" data-active="true"><span class="dot dot-allow"></span>allow</button>' +
+      '<button class="seg-item is-ask" type="button" data-active="false"><span class="dot dot-ask"></span>ask</button>' +
+      '<button class="seg-item is-deny" type="button" data-active="false"><span class="dot dot-deny"></span>deny</button>' +
+      '</div></div>' +
+      '<button class="icon-btn rule-remove" type="button" aria-label="删除规则">' + ICON_X + '</button>';
+    table.appendChild(row);
+    document.getElementById('card-cmds').classList.add('has-pending');
+  }
+
+  function resetDirs() {
+    var list = document.querySelector('#card-dirs .dir-list');
+    while (list.firstChild) list.removeChild(list.firstChild);
+    ['C:\\Users\\IDEA\\.confluence-mcp','C:\\Users\\IDEA\\.jenkins-mcp','C:\\Users\\IDEA\\.rancher-mcp']
+      .forEach(function (p) {
+        var d = document.createElement('div');
+        d.className = 'dir-row';
+        d.innerHTML = '<span class="dir-icon" aria-hidden="true">📁</span><input class="input mono" value="'+p+'" aria-label="授权目录">' +
+          '<button class="icon-btn" type="button" aria-label="删除">' + ICON_X + '</button>';
+        list.appendChild(d);
+      });
+    document.getElementById('card-dirs').classList.remove('has-pending');
+  }
+
+  // 小 ✕ 图标（修复⑦：目录行与规则行删除按钮统一为小图标按钮）
+  var ICON_X = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+</script>
+</body>
+</html>
