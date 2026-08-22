@@ -453,14 +453,7 @@
     background: var(--dsw-alias-state-warn-primary);
   }
 
-  /* 提交/重置说明 */
-  .prose-sm { color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 1.55; margin: 0; }
-  .kbd {
-    font-family: var(--dsw-font-family-code); font-size: 11px;
-    border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-3);
-    border-radius: 5px; padding: 0 5px; color: var(--dsw-alias-label-secondary);
-  }
-</style>
+  </style>
 </head>
 <body>
 <div class="page">
@@ -722,13 +715,6 @@
         </div>
       </div>
     </article>
-
-    <!-- 只读提示（可选，用于某些部署语义） -->
-    <p class="prose-sm">
-      提示：撤销授权后，已物化到目录 DACL 的 ACE 不会被自动移除（Windows）；如需清理请用
-      <span class="kbd">scripts/revoke.mjs</span>。注意不要在本分节内使用
-      <span class="kbd">pnpm install</span> 全局重装 web profile（github git+ssh 依赖会失败）。
-    </p>
   </section>
 </div>
 

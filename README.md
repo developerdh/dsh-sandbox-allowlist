@@ -19,6 +19,10 @@ DSH 沙箱允许写哪里 = 允许清单（allow-list）。本插件向清单**�
 - **Windows**：沙箱用「工作区写 SID 的 Write ACE」作为允许清单。插件在沙箱授权目录上
   物化该 SID 的**继承式写 ACE**（`(OI)(CI)(W,D,DC)`）→ 受限 CLI 直接可写、
   未来子目录自动继承；write/edit 工具由自研 fs 栅栏放行同一份清单。
+  **撤销即回收**：从配置中删除目录会触发自动对账，把之前写入该目录树（含子目录）
+  的写 ACE 一并移除——无需任何手工清理；对账清单持久化在
+  `$DSH_HOME/sandbox-allowlist-grants.json`，即使进程在离线状态下改过配置，
+  下次启动也会自动补齐回收。
 - **Linux**：`bwrap` 追加 `--bind <root> <root>`；landlock/seatbelt 暂不支持
   （会告警并忽略，建议使用 bwrap）。
 
@@ -54,8 +58,8 @@ sandbox-allowlist:
 ```
 
 > ⚠️ **安全警示**：沙箱授权目录将被沙箱内的 AI 代理直接写入（无需审批）。请只添加
-> 完全信任的目录；目录必须**已存在且归当前用户所有**；撤销信任删除条目即可
-> （Windows 上旧目录的 ACE 用 `node scripts/revoke.mjs` 清理）。
+> 完全信任的目录；目录必须**已存在且归当前用户所有**；撤销信任删除条目即可，
+> Windows 上此前授予的写权限会在撤销时自动回收，无需手工清理。
 
 通配符在**每次调用前懒展开**（TTL 缓存，`expandTtlMs` 可调）；不存在的路径跳过
 并告警（`strict: true` 可改为抛错）；锚定盘符/根目录且带 `**` 的模式被拒绝
@@ -98,16 +102,18 @@ sandbox-allowlist:
 ## 包结构
 
 ```
-lib/policy.mjs      替换 sandbox-policy：沙箱授权目录展开 + Windows ACE 物化 +
-                   sandbox-allowlist 设置 namespace 注册 + 模型提示上下文 +
-                   命令白名单 gate 挂载
+lib/policy.mjs      替换 sandbox-policy：沙箱授权目录展开 + Windows ACE 物化与
+                    撤销对账（grant-manifest.mjs 持久化清单）+ sandbox-allowlist
+                    设置 namespace 注册 + 模型提示上下文 + 命令白名单 gate 挂载
+lib/grant-manifest.mjs  授权清单持久化（跨重启对账的可靠记忆）
+lib/acl-revoke.mjs  Windows ACE 回收原语（SDDL 读改写，icacls 在本平台不可用）
 lib/command-rules.mjs  命令白名单规则引擎（通配符匹配，纯函数，可单测）
 lib/command-gate.mjs    tools/pre-execute 拦截门：allow/ask/deny 决策
 lib/fs.mjs          替换 fs-sandbox：write/edit 栅栏放行 extraRoots
 lib/provider.mjs    替换 sandbox（仅 Linux）：bwrap --bind 追加
 lib/patterns.mjs    通配符匹配与目录展开（共享）
 cordis.patch.yml    bundle 补丁层（安装即挂载）
-scripts/revoke.mjs  Windows ACE 撤销脚本
+scripts/revoke.mjs  Windows 应急清理脚本（通常无需使用：撤销已自动回收）
 src/client/         设置页「沙箱授权目录」分节源码（需 dsh 开发工具链构建）
 test/               自检测试 / 补丁组合预检 / 干挂载测试
 ```
@@ -123,7 +129,8 @@ npm run test:dry-mount       # 干挂载（临时 cordis 上下文端到端验�
 
 真机验证要点：受限 pwsh / write 工具写沙箱授权目录应成功且无审批；写工作区外**非**可信
 目录应仍被拦截（`FS_SANDBOX_DENIED`）；`icacls <dir>` 应能看到工作区 SID
-`S-1-4-...` 的 `(OI)(CI)(W,D,DC)` ACE。
+`S-1-4-...` 的 `(OI)(CI)(W,D,DC)` ACE；在设置页删除该目录并保存后，同一
+`icacls` 输出中该 ACE（含子目录继承副本）应消失——撤销即回收。
 
 ## 设置页界面（客户端分节）
 
@@ -192,6 +199,12 @@ npm run test:dry-mount       # 干挂载（临时 cordis 上下文端到端验�
 ## 已知限制
 
 - **Windows**：沙箱授权目录必须存在且归当前用户所有（需能改 DACL）
+- **Windows（撤销回收）**：回收失败（如目录不再归当前用户所有、无法改写 DACL）的
+  目录会保留在 `$DSH_HOME/sandbox-allowlist-grants.json` 中，下次对账自动重试；
+  已删除的目录直接视为已回收。回收宿主优先使用系统自带 Windows PowerShell 5.1，
+  缺失时回退 PowerShell 7（pwsh，PATH 或标准安装目录）；两者皆缺时回收挂起并告警，
+  待下次对账重试。若插件被卸载而目录残留了 ACE，可用
+  `node scripts/revoke.mjs` 应急清理
 - **Linux**：`bwrap` 完整支持；`landlock`/`seatbelt` 暂不支持
 - write/edit 工具只在 `workspace-write` 模式下放行沙箱授权目录
 - dsh 升级时若基类（`SandboxPolicyService` / `SandboxedFileSystem` /

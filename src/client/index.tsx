@@ -660,11 +660,6 @@ export function makeAllowlistSection(scope: any) {
         </p>
         <DirsCard />
         <CommandsCard />
-        <p className="sabx-prose-sm">
-          提示：撤销授权后，已物化到目录 DACL 的 ACE 不会被自动移除（Windows）；如需清理请用
-          <span className="sabx-kbd">scripts/revoke.mjs</span>。注意不要在本分节内使用
-          <span className="sabx-kbd">pnpm install</span>全局重装 web profile（github git+ssh 依赖会失败）。
-        </p>
       </section>
     )
   }

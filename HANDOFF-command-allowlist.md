@@ -105,6 +105,22 @@ web profile：`C:\Users\<用户名>\.dsh\profiles\web`
   ```
   语义：allow=免询问（仍受文件沙箱约束）；ask=弹审批；deny=拦截；delegate=维持现状。规则按顺序、最后一条匹配的生效。
 
+## 六、v0.2.0-beta.1 部署记录（撤销自动回收，pre-release）
+
+- 版本 0.2.0-beta.1（pre-release）：功能已完整实现并通过自测/集成验证，**待市场环境验证无问题后发布正式版 0.2.0**；
+  tarball：`.pack\dsh-sandbox-allowlist-0.2.0-beta.1.tgz`（旧 0.1.0 / 0.2.0 tarball 不再保留于 `.pack\`）
+- 新增 `lib\grant-manifest.mjs`（持久化授权清单）、`lib\acl-revoke.mjs`（Windows ACE 回收）；
+  `lib\policy.mjs` 含对账式撤销（`_reconcile`）：设置变更保存即回收被移除目录的 ACE（含子目录），
+  启动时对账补齐离线修改/崩溃残留；清单落盘 `$DSH_HOME\sandbox-allowlist-grants.json`
+- UI：设置页分节尾部提示段落已删除（`src/client/index.tsx` 与 `lib/client.js` 同步）；
+  客户端 bundle 已热生效——`http://127.0.0.1:3080/plugins/dsh-sandbox-allowlist/client.js`
+  已确认不含旧文案（无需重启）
+- 服务端 `policy.mjs` 需**重启 dsh web 服务**后生效（模块缓存）；重启后首次对账会在
+  `$DSH_HOME` 生成清单文件并核对既有授权目录
+- 新单元/集成验证：`npm test`（含 stripDaclSddl/diffGranted/manifest/collectRevokeDirs 用例）、
+  `test:patch`、`test:dry-mount`（隔离了测试 DSH_HOME）、`test:command-gate`、`test:client` 全绿；
+  端到端探针已实证「保存撤销 → 配置生效 → ACE 全树回收 → 清单清空」
+
 ## 五、风险与注意
 - 不要用 `pnpm install` 全量重装 web profile（github git+ssh 依赖会失败）。
 - 改 settings.yaml 前务必先备份；验证用的临时规则验证后一定还原。

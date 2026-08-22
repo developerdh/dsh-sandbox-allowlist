@@ -33,6 +33,21 @@ import {
   dispositionForAction,
   denyReason,
 } from '../lib/command-gate.mjs'
+import {
+  stripDaclSddl,
+  revokeWriteAces,
+  collectRevokeDirs,
+  resolvePowerShell,
+} from '../lib/acl-revoke.mjs'
+import {
+  MANIFEST_FILE_NAME,
+  manifestPath,
+  loadManifest,
+  saveManifest,
+  workspaceGrants,
+  setWorkspaceGrants,
+  diffGranted,
+} from '../lib/grant-manifest.mjs'
 import AllowlistPolicyService, { SETTINGS_NAMESPACE, AllowlistSettingsSchema, CommandRuleSchema, CommandSettingsSchema } from '../lib/policy.mjs'
 import AllowlistFileSystem from '../lib/fs.mjs'
 import AllowlistSandboxProvider from '../lib/provider.mjs'
@@ -126,7 +141,102 @@ assert.match(denyReason('bash', 'rm -rf /'), /deny rule/)
   assert.equal(cmds.value.rules.length, 1)
 }
 
-// ── filesystem expansion ───────────────────────────────────────────────────
+// ── ACL reclamation (SDDL strip is pure; spawn helpers stay platform-safe) ──
+  {
+    // explicit + inherited copies of the workspace SID are dropped in one pass
+    const sddl = 'D:AI(A;OICI;0x110156;;;S-1-4-1-2)(A;OICIID;0x110156;;;S-1-4-1-2)(A;ID;FA;;;BA)'
+    const out = stripDaclSddl(sddl, 'S-1-4-1-2')
+    assert.equal(out.count, 2)
+    assert.equal(out.sddl, 'D:AI(A;ID;FA;;;BA)')
+
+    // absent SID → untouched, zero count
+    const untouched = stripDaclSddl('D:(A;ID;FA;;;SY)', 'S-1-4-9-9')
+    assert.equal(untouched.count, 0)
+    assert.equal(untouched.sddl, 'D:(A;ID;FA;;;SY)')
+
+    // every segment naming the SID is removed, others preserved in order
+    const multiple = stripDaclSddl('D:(A;OICI;0x110156;;;S-1-4-7-8)(A;ID;0x1301bf;;;AU)(A;OICI;0x110156;;;S-1-4-7-8)', 'S-1-4-7-8')
+    assert.equal(multiple.count, 2)
+    assert.equal(multiple.sddl, 'D:(A;ID;0x1301bf;;;AU)')
+
+    // an empty/short DACL round-trips unchanged
+    assert.equal(stripDaclSddl('D:', 'S-1-4-1-1').sddl, 'D:')
+
+    // non-Windows invocation is a no-op; on Windows it spawns — never touched here
+    const noop = revokeWriteAces([], 'S-1-4-1-2')
+    assert.equal(noop.ok, true)
+
+    // PowerShell host resolution: a host must resolve on win32, none elsewhere
+    const host = resolvePowerShell()
+    if (process.platform === 'win32') {
+      assert.ok(host && host.exe, 'a PowerShell host resolves on win32')
+      assert.equal(typeof host.pin51, 'boolean')
+    } else {
+      assert.equal(host, null)
+    }
+  }
+
+  // ── grants manifest ───────────────────────────────────────────────────────
+  {
+    const manifestBase = mkdtempSync(join(tmpdir(), 'dsh-grants-man-'))
+    try {
+      // missing file → empty; corrupt file → empty, never throws
+      const missing = manifestPath(manifestBase)
+      assert.deepEqual(loadManifest(missing), { workspaces: {} })
+      writeFileSync(missing, '{oops', 'utf8')
+      assert.deepEqual(loadManifest(missing), { workspaces: {} })
+
+      // round-trip: save → load → per-workspace get/set
+      const manifest = { workspaces: {} }
+      setWorkspaceGrants(manifest, 'W:\\work', ['D:\\Shared\\Tools', 'D:\\Data\\logs'])
+      saveManifest(missing, manifest)
+      const loaded = loadManifest(missing)
+      assert.deepEqual(workspaceGrants(loaded, 'W:\\work'), ['D:\\Shared\\Tools', 'D:\\Data\\logs'])
+      assert.deepEqual(workspaceGrants(loaded, 'W:\\other'), [])
+      assert.equal(loaded.workspaces['W:\\work'].length, 2)
+      assert.equal(MANIFEST_FILE_NAME, 'sandbox-allowlist-grants.json')
+    } finally {
+      rmSync(manifestBase, { recursive: true, force: true })
+    }
+  }
+
+  // ── granted × wanted diff ─────────────────────────────────────────────────
+  {
+    const plain = diffGranted(['a', 'b'], ['b', 'c'])
+    assert.deepEqual(plain.toAdd, ['c'])
+    assert.deepEqual(plain.toRemove, ['a'])
+
+    // parents are reclaimed before children (a child must never re-inherit
+    // from a batch root that is being reclaimed in the same run)
+    const nested = diffGranted(['D:\\x\\b', 'D:\\x'], [])
+    assert.deepEqual(nested.toRemove, ['D:\\x', 'D:\\x\\b'])
+
+    // duplicate wanted roots collapse
+    assert.deepEqual(diffGranted([], ['a', 'a']).toAdd, ['a'])
+
+    // identical sets → no work
+    const same = diffGranted(['a', 'b'], ['b', 'a'])
+    assert.deepEqual(same.toAdd, [])
+    assert.deepEqual(same.toRemove, [])
+  }
+
+  // ── revoke dir collection (parents first, symlinks never followed) ────────
+  {
+    const treeBase = mkdtempSync(join(tmpdir(), 'dsh-revoke-tree-'))
+    try {
+      const root = join(treeBase, 'root')
+      mkdirSync(join(root, 'a', 'deep'), { recursive: true })
+      writeFileSync(join(root, 'a', 'file.txt'), 'x')
+      const { dirs, missing } = collectRevokeDirs([root, join(treeBase, 'gone')])
+      assert.deepEqual(missing, [join(treeBase, 'gone')])
+      assert.deepEqual(dirs, [root, join(root, 'a'), join(root, 'a', 'deep')])
+      assert.ok(!dirs.some((dir) => dir.endsWith('file.txt')), 'files are never collected')
+    } finally {
+      rmSync(treeBase, { recursive: true, force: true })
+    }
+  }
+
+  // ── filesystem expansion ───────────────────────────────────────────────────
 const base = mkdtempSync(join(tmpdir(), 'dsh-allowlist-test-'))
 try {
   const shared = join(base, 'Shared')

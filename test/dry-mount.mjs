@@ -13,7 +13,9 @@
  */
 
 import assert from 'node:assert/strict'
-import { existsSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import PolicyPlugin from '../lib/policy.mjs'
 import FsPlugin from '../lib/fs.mjs'
@@ -21,6 +23,16 @@ import FsPlugin from '../lib/fs.mjs'
 const WORKSPACE = 'D:/Work/ProductCode/Devops/AI'
 const TRUSTED = 'D:\\dsh-trust-test'
 const OUTSIDE = 'D:\\dsh-trust-test-other\\x.txt'
+
+// Isolate the grants manifest (policy writes it next to the settings
+// document) so a test workspace never pollutes the real DSH home.
+process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-drymount-home-'))
+
+// The fixture directory the pattern expands to; create it when missing so
+// the dry-mount is self-contained on a fresh machine.
+if (!existsSync(TRUSTED)) {
+  mkdirSync(TRUSTED, { recursive: true })
+}
 
 const ctx = new Context()
 // The policy's model-facing context needs a systemPrompt service; a stub is
@@ -97,4 +109,5 @@ console.log('write outside trusted root: DENIED as expected')
 try { if (existsSync(inside.displayPath)) unlinkSync(inside.displayPath) } catch { /* best effort */ }
 await policyFiber.dispose()
 await fsFiber.dispose()
+try { rmSync(process.env.DSH_HOME, { recursive: true, force: true }) } catch { /* best effort */ }
 console.log('dry-mount: all checks passed')
