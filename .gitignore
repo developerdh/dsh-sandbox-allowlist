@@ -14,3 +14,4 @@ Thumbs.db
 .vscode/
 *.swp
 /.pack
+/docs/temp
