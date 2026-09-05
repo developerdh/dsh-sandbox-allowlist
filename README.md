@@ -9,6 +9,8 @@ DSH（DeepSeek Harness）沙箱扩展插件：为官方默认沙箱增加**可�
 - ✅ 覆盖 **Windows（ACL 沙箱）与 Linux（bwrap）**
 - ✅ **命令白名单**：配置哪些命令无需询问即可运行（`allow`）/必须询问（`ask`）/被拦截
   （`deny`），参考 opencode / Claude Code 的权限规则设计，通配符忽略参数
+- ✅ **禁读规则（noRead）**：按文件名/路径模式限制读取（`deny` 硬拦 / `ask` 审批放行），
+  默认允许读的官方行为无需配置 allow
 - ✅ 设置页可编辑（`sandbox-allowlist` 设置 namespace，含安全警示说明）
 - ✅ 纯插件实现：不修改任何 node_modules / 官方包代码
 
@@ -53,7 +55,7 @@ sandbox-allowlist:
     - 'D:\Shared\Tools'    # 字面目录：整棵子树可写
     - 'D:\Shared\**'       # 子树（含根自身与未来子目录）
     - 'D:\Data\logs\*'     # 现存的一级子目录
-    - 'D:\Work\202?'       # ? 匹配单个非分隔符字符
+    - 'D:\Archive\202?'       # ? 匹配单个非分隔符字符
     - '/opt/tools/**'      # POSIX 写法同样支持
 ```
 
@@ -99,17 +101,83 @@ sandbox-allowlist:
   完全保留部署原有的行为。
 - 规则通过设置页/`settings.yaml` 编辑，**实时生效，无需重启**。
 
+## 禁读规则（noRead）
+
+官方沙箱对**读**不做任何限制（fs 栅栏只拦写）；`noRead` 是它的正交补充：按
+**文件名 / 目录 / 路径模式**限制模型读取，命中即按规则动作处理。因为默认本来就
+允许读，**不提供 `allow` 动作**（显式 allow 与默认行为无异，纯属噪音）；需要
+"人工批准一次再读"用 `ask`。每条规则两个字段：
+
+```yaml
+sandbox-allowlist:
+  noRead:
+    - pattern: '*.pem'        # ① 文件名模式：任意目录深度的 .pem 禁读
+      action: deny            #    deny（默认）= 直接拒绝读取
+    - pattern: '.env*'        #    覆盖 .env / .env.local / .env.production …
+      action: deny
+    - pattern: 'id_rsa*'
+      action: deny
+    - pattern: 'D:\Vault\**\*.key'   # ② 完整路径 + 通配符：保险库下所有 .key
+      action: deny
+    - pattern: 'D:\Vault'     # ③ 目录级：字面绝对目录 → 整棵子树禁读（含列表）
+      action: deny            #    等价写法：'D:\Vault\**'
+    - pattern: '*.crt'        # ask：命中时弹一次人工审批，批准后本次放行
+      action: ask
+```
+
+模式词汇（Windows 大小写不敏感，三种形态自动识别）：
+
+- **① 文件名模式**（不含路径分隔符）：只按**文件名**匹配，任意目录深度命中：
+  `*.pem` 拦任何位置的 .pem；`.env*` 拦 .env、.env.local…；`id_rsa` 精确文件名；
+- **② 完整路径 + 通配符**（含分隔符且有 `*`/`?`）：`D:\Vault\**\*.key` 拦保险库下
+  所有 .key；连续两个 `*` 可跨目录，单个 `*` 不跨；
+- **③ 目录级**（含分隔符但无通配符的**绝对**路径）：字面目录（`D:\Vault`）或
+  显式子树（`D:\Vault\**`）→ **目录本身及其整棵子树禁读，含目录列表（listDir）**；
+  若该路径实际是个文件则等价于只禁读这一个文件。
+
+护栏（配错的宽规则会被拒绝并告警，绝不静默全禁）：锚定盘符/根（`D:\`、`/`）与
+纯通配 `*`/`**`/`?` 会被拒绝——避免误伤整盘。
+
+**分层强制（deny 规则双层生效，ask 规则单层生效）**：
+
+1. **fs 强制层（`lib/fs.mjs`）**：对命中 `deny` 的目标，`read` / `read_image` /
+   `edit`（隐含读旧内容）、**目录级 listDir**、以及 **write 覆盖已存在文件**
+   （需回读旧内容生成 diff，write 工具会把旧内容作为 `before` 返回）一律抛
+   `FS_READ_DENIED`；**新建**同名/同格式文件仍允许（限制的是读不是写）；
+2. **pre-execute 门（`lib/read-gate.mjs`）**：`read` / `read_image` / `edit` 调用
+   在参数 `file_path` 命中时立即返回决策——`deny` 直接拦（不执行任何文件 I/O），
+   `ask` 走审批（`allowed-once`，批准后 fs 层不会二次拦截）；
+3. **模型提示上下文**：把禁读清单注入系统提示，模型知道哪些不能读、哪些要问人，
+   避免反复尝试。
+
+边界请知悉（写入文档也是设计的一部分）：
+
+- **只约束 dsh 自带读文件工具与经 `ctx.fs` 的读取**；`bash`/`pwsh` 的
+  cat/type/Get-Content 与 `grep` 工具（spawn 原生 ripgrep，不经 `ctx.fs`）无法按
+  文件名/扩展名在水面下强制拦截（进程级 ACL/bwrap 目录隐藏是后续方向）——真敏感
+  的文件请移出模型可达范围，或用命令规则 deny 明显的读取命令；
+- 目录级禁读只拦**被禁目录自身的列表与树内读取**：其**父级**目录列表仍会显示该目录
+  名（模型能看到"存在这个目录"，但读不进任何内容）；
+- 会话处于 `danger-full-access`（显式"全信任"）时禁读不生效，与写沙箱一致。
+
+> 📖 三种权限规则（授权目录 / 命令规则 / 禁读规则）的完整使用说明与场景示例见
+> [docs/guides/permission-rules.md](docs/guides/permission-rules.md)。
+
 ## 包结构
 
 ```
 lib/policy.mjs      替换 sandbox-policy：沙箱授权目录展开 + Windows ACE 物化与
                     撤销对账（grant-manifest.mjs 持久化清单）+ sandbox-allowlist
                     设置 namespace 注册 + 模型提示上下文 + 命令白名单 gate 挂载
+                    + noRead 禁读规则（挂载到 policy.noReadRules + 注册读门）
 lib/grant-manifest.mjs  授权清单持久化（跨重启对账的可靠记忆）
 lib/acl-revoke.mjs  Windows ACE 回收原语（SDDL 读改写，icacls 在本平台不可用）
 lib/command-rules.mjs  命令白名单规则引擎（通配符匹配，纯函数，可单测）
 lib/command-gate.mjs    tools/pre-execute 拦截门：allow/ask/deny 决策
-lib/fs.mjs          替换 fs-sandbox：write/edit 栅栏放行 extraRoots
+lib/read-deny.mjs   禁读规则引擎（文件名/路径匹配 + deny/ask，纯函数，可单测）
+lib/read-gate.mjs   tools/pre-execute 拦截门：read/read_image/edit 的 deny/ask 决策
+lib/fs.mjs          替换 fs-sandbox：write/edit 栅栏放行 extraRoots + noRead 读强制层
+                    （readText/streamText/readBytes/editText/覆盖写 → FS_READ_DENIED）
 lib/provider.mjs    替换 sandbox（仅 Linux）：bwrap --bind 追加
 lib/patterns.mjs    通配符匹配与目录展开（共享）
 cordis.patch.yml    bundle 补丁层（安装即挂载）
@@ -121,8 +189,9 @@ test/               自检测试 / 补丁组合预检 / 干挂载测试
 ## 开发与验证
 
 ```bash
-npm test                     # 自检测试（通配符展开、命令规则、类继承、Config/schema 校验）
+npm test                     # 自检测试（通配符展开、命令规则、noRead 规则、类继承、Config/schema 校验）
 npm run test:command-gate    # 端到端验证命令白名单 gate（真实 cordis 上下文 + tools/pre-execute 分发）
+npm run test:read-gate       # 端到端验证 noRead 禁读（policy.noReadRules 挂载 + fs 强制层 + pre-execute deny/ask）
 npm run test:patch           # 补丁组合预检（离线组合 web profile 补丁层）
 npm run test:dry-mount       # 干挂载（临时 cordis 上下文端到端验证）
 ```
@@ -144,9 +213,9 @@ npm run test:dry-mount       # 干挂载（临时 cordis 上下文端到端验�
    `lib/client.js`）**：`src/client/index.tsx` 在设置页 `settings.section` 槽位
    注册「沙箱授权」分节，UI 对齐 `docs/config-ui-prototype.html`（v5）高保真原型与
    dsh 官方插件配置卡片（`dsh-client-ui-settings-plugins`）的设计语言：
-   - **分节结构**：标题 + 导语 + 两张可折叠配置卡片（授权目录 / 命令规则），
-     卡片标题含计数与「未保存修改」徽章；收起态主体真正隐藏（CSS
-     `:not(.is-open)`），头部信息保留；
+   - **分节结构**：标题 + 导语 + 三张可折叠配置卡片（授权目录 / 命令规则 /
+      禁读规则），卡片标题含计数与「未保存修改」徽章；收起态主体真正隐藏（CSS
+      `:not(.is-open)`），头部信息保留；
    - **授权目录卡片**：克制式安全警示 callout + 结构化目录行（📁 或新增行的
      绿色「＋」圆形徽章 + 等宽输入 + 小 ✕ 图标按钮），焦点只高亮输入框本身
      （行边框不高亮），非法条目标红输入框（浏览器侧轻量校验镜像
@@ -155,6 +224,10 @@ npm run test:dry-mount       # 干挂载（临时 cordis 上下文端到端验�
      `deny`，选中项 = 语义色浅底 + 语义色文字 + 粗体 + 内描边，未选中统一
      中性色）+ 规则表（**自绘工具下拉** + 命令模式 + `allow`/`ask`/`deny`
      紧凑分段 + 小 ✕ 图标按钮）+「添加规则」；
+   - **禁读规则卡片**：与命令规则同款规则表，但动作**只提供 `deny`/`ask` 两档**
+     （无 `allow`——官方默认本就允许读，配了是空操作），pattern 输入（占位
+     `*.pem`）+ 紧凑 `deny`/`ask` 分段 + 小 ✕ +「添加规则」；保存写入
+     `noRead` 字段（`scope.set('noRead', [...])`）；页脚提示说明豁免用 `ask`；
    - 工具下拉为**自绘组件**（原生 `<select>` 展开态由浏览器渲染、CSS 无法定制，
      故用胶囊触发按钮 + 自绘菜单实现，展开/选中态完全可控）；选项仅
      `bash` / `pwsh` / `任意`——dsh 只有这两个 shell 工具，其它值会被服务端
@@ -207,6 +280,13 @@ npm run test:dry-mount       # 干挂载（临时 cordis 上下文端到端验�
   `node scripts/revoke.mjs` 应急清理
 - **Linux**：`bwrap` 完整支持；`landlock`/`seatbelt` 暂不支持
 - write/edit 工具只在 `workspace-write` 模式下放行沙箱授权目录
+- **noRead 只约束模型的文件工具与经 ctx.fs 的读取**：shell 命令（cat/type/
+  Get-Content）与 `grep`/`glob` 工具（spawn 原生 ripgrep，不经 ctx.fs）无法按
+  文件名/扩展名强制拦截；**目录级**禁读同样只覆盖工具层（进程级 ACL deny /
+  bwrap 目录隐藏是后续方向），且被禁目录的**父级列表**仍会显示其目录名；
+  `danger-full-access`（全信任模式）下禁读不生效
+- noRead 的 `ask` 规则只作用于 read / read_image / edit 工具（write 覆盖旧文件
+  只受 `deny` 规则的 fs 层拦截，新建不受限）；目录级 `deny` 另拦 listDir
 - dsh 升级时若基类（`SandboxPolicyService` / `SandboxedFileSystem` /
   `LocalSandboxProvider`）签名变化，本插件可能需要小调
 

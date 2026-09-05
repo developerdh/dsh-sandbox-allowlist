@@ -7,21 +7,25 @@
  * 产物覆盖 lib/client.js。两处必须保持一致。
  *
  * 重构要点（与原型一致）：
- *   - 分节 = 标题 + 导语 + 两个可折叠配置卡片（授权目录 / 命令规则）；
- *   - 卡片收起态主体真正隐藏，头部计数与「未保存修改」徽章保留；
+ *   - 分节 = 标题 + 导语 + 三个可折叠配置卡片（授权目录 / 命令规则 / 禁读规则）；
+ *   - 卡片**默认全部收起**，点击标题展开；收起态主体真正隐藏，头部计数与
+ *     「未保存修改」徽章保留；
  *   - 授权目录：结构化目录行，新增行 = 绿色「＋」圆形徽章；焦点只高亮输入框
  *     （行边框不高亮）；非法条目标红输入框；
  *   - 命令规则：默认动作分段选择（选中项 = 语义色浅底 + 语义色文字 + 粗体 +
  *     内描边）；规则行 = 自绘工具下拉 + 命令模式输入 + 紧凑 allow/ask/deny
  *     分段 + 小 ✕ 图标按钮；
+ *   - 禁读规则：与命令规则同款规则表，但动作只提供 deny/ask 两档（官方默认
+ *     本就允许读，不提供 allow），pattern 输入 + 紧凑 deny/ask 分段 + 小 ✕；
  *   - 工具下拉为自绘组件（原生 <select> 展开态无法定制样式）；选项仅
  *     bash / pwsh / 任意（dsh 只有这两个 shell 工具，其它值会被服务端校验拒绝）；
  *   - 样式由 lib/client.js 注入作用域化 <style>（.sabx-* 前缀），全部使用
  *     dsw 运行时令牌（--dsw-alias-* / --dsw-specific-*，带十六进制 fallback）。
  *
  * 数据流不变：绑定 `sandbox-allowlist` 设置 namespace → 表单编辑 →
- * scope.set('allowedDirs', [...]) / scope.set('commands', {...}) →
- * 写入用户设置文档（$DSH_HOME/settings.yaml）→ 服务端策略**实时生效**。
+ * scope.set('allowedDirs', [...]) / scope.set('commands', {...}) /
+ * scope.set('noRead', [...]) → 写入用户设置文档（$DSH_HOME/settings.yaml）→
+ * 服务端策略**实时生效**。
  *
  * 注意：组件定义在 apply 闭包内、直接订阅绑定的 scope —— 不依赖 slots
  * 系统向组件注入 props 的转换契约，任何情况下都不会因 props 缺失而崩溃。
@@ -52,6 +56,16 @@ export const COMMANDS_HINT =
 
 export const COMMANDS_TAIL_HINT = '空 pattern 的行不会保存；工具留空（任意）时规则对所有 shell 工具生效。'
 
+export const NOREAD_HINT =
+  'pattern 支持 <code>*</code>（任意多个字符）与 <code>?</code>（单个字符）。' +
+  '不含路径分隔符 ⇒ 按文件名匹配任意目录深度（<code>*.pem</code>、<code>.env*</code>、<code>id_rsa*</code>）；' +
+  '含分隔符 ⇒ 按完整路径匹配（<code>D:\\Vault\\**\\*.key</code> 之类）。' +
+  '目录级：写绝对目录路径（如 <code>D:\\Vault</code>）或末尾加 <code>/**</code>，整棵子树（含目录列表）禁读。'
+
+export const NOREAD_TAIL_HINT =
+  '空 pattern 的行不会保存。不提供 allow 动作——官方默认本就允许读；' +
+  '想临时放行某个命中文件，把该条动作配成 ask（弹一次人工审批）。'
+
 /** 工具选项（空 = 任意工具；方案 A：标签与值一致）。 */
 export const TOOL_OPTIONS = [
   { value: '', label: '任意' },
@@ -64,6 +78,12 @@ export const ACTION_OPTIONS = [
   { value: 'allow', dot: 'sabx-dot-allow' },
   { value: 'ask', dot: 'sabx-dot-ask' },
   { value: 'deny', dot: 'sabx-dot-deny' },
+]
+
+/** 禁读规则动作：只提供 deny / ask（allow 与默认行为无异，刻意不提供）。 */
+export const NOREAD_ACTIONS = [
+  { value: 'deny', dot: 'sabx-dot-deny' },
+  { value: 'ask', dot: 'sabx-dot-ask' },
 ]
 
 /** 未命中规则时的默认动作（delegate 无圆点）。 */
@@ -105,6 +125,22 @@ export function currentCommands(scope: any): { default: string; rules: any[] } {
   return { default: defaultValue, rules }
 }
 
+/** 从设置 scope 快照读取当前禁读规则（[{ pattern, action }]，动作归一为 deny/ask）。 */
+export function currentNoRead(scope: any): any[] {
+  let snapshot
+  try {
+    snapshot = scope.getSnapshot()
+  } catch {
+    return []
+  }
+  const value = snapshot && snapshot.value
+  const rules = Array.isArray(value && value.noRead) ? value.noRead : []
+  return rules.map((rule: any) => ({
+    pattern: rule && typeof rule.pattern === 'string' ? rule.pattern : '',
+    action: rule && rule.action === 'ask' ? 'ask' : 'deny',
+  }))
+}
+
 /** 返回非法原因，null 表示通过（浏览器侧轻量镜像 lib/patterns.mjs 的拒绝规则）。 */
 export function validateDirPattern(raw: string): string | null {
   if (typeof raw !== 'string') return '目录必须是字符串。'
@@ -143,6 +179,18 @@ function rulesDirty(rules: any[], saved: any[]): boolean {
     if ((a.tool || '') !== (b.tool || '')) return true
     if (String(a.pattern || '').trim() !== String(b.pattern || '').trim()) return true
     if ((a.action || 'ask') !== (b.action || 'ask')) return true
+  }
+  return false
+}
+
+/** 禁读规则草稿与已保存值是否不同（无 tool 维度）。 */
+function noReadDirty(rules: any[], saved: any[]): boolean {
+  if (rules.length !== saved.length) return true
+  for (let i = 0; i < rules.length; i += 1) {
+    const a = rules[i]
+    const b = saved[i]
+    if (String(a.pattern || '').trim() !== String(b.pattern || '').trim()) return true
+    if ((a.action || 'deny') !== (b.action || 'deny')) return true
   }
   return false
 }
@@ -308,7 +356,7 @@ function Card(props: {
 export function makeDirsCard(scope: any) {
   return function DirsCard() {
     const [rows, setRows] = useState<{ value: string }[]>([])
-    const [open, setOpen] = useState(true)
+    const [open, setOpen] = useState(false)
     const [saving, setSaving] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [invalid, setInvalid] = useState<Record<number, boolean>>({})
@@ -472,7 +520,7 @@ export function makeCommandsCard(scope: any) {
   return function CommandsCard() {
     const [rules, setRules] = useState<any[]>([])
     const [defaultAction, setDefaultAction] = useState('delegate')
-    const [open, setOpen] = useState(true)
+    const [open, setOpen] = useState(false)
     const [saving, setSaving] = useState(false)
     const [error, setError] = useState<string | null>(null)
 
@@ -643,23 +691,166 @@ export function makeCommandRulesEditor(scope: any) {
 }
 
 /**
+ * 构建「禁读规则」卡片（pattern 输入 + 紧凑 deny/ask 分段 + 删除/添加/保存/放弃）。
+ * 动作刻意只有 deny / ask：官方默认本就允许读，allow 与默认行为无异，故不提供。
+ * @param scope - ctx.settingsScope.bind 返回的 controller。
+ */
+export function makeNoReadCard(scope: any) {
+  return function NoReadCard() {
+    const [rules, setRules] = useState<any[]>([])
+    const [open, setOpen] = useState(false)
+    const [saving, setSaving] = useState(false)
+    const [error, setError] = useState<string | null>(null)
+
+    useEffect(() => {
+      const update = () => {
+        try {
+          setRules(currentNoRead(scope))
+        } catch {
+          // a stale scope must never break the section render
+        }
+      }
+      update()
+      return scope.subscribe(update)
+    }, [])
+
+    const saved = currentNoRead(scope)
+    const pendingCount = noReadDirty(rules, saved) ? 1 : 0
+
+    const setRule = (index: number, patch: Partial<any>) => {
+      setError(null)
+      setRules((previous) => previous.map((rule, i) => (i === index ? { ...rule, ...patch } : rule)))
+    }
+
+    const addRule = () => {
+      setError(null)
+      setRules((previous) => [...previous, { pattern: '', action: 'deny' }])
+    }
+
+    const removeRule = (index: number) => {
+      setError(null)
+      setRules((previous) => previous.filter((_, i) => i !== index))
+    }
+
+    const restoreSaved = () => {
+      setRules(currentNoRead(scope))
+      setError(null)
+    }
+
+    const save = async () => {
+      setError(null)
+      // 空 pattern 的行不保存；action 归一为 deny/ask（服务端 schema 同样拒绝 allow）。
+      const cleanRules = rules
+        .filter((rule) => rule && rule.pattern && String(rule.pattern).trim().length > 0)
+        .map((rule) => ({
+          pattern: String(rule.pattern).trim(),
+          action: rule.action === 'ask' ? 'ask' : 'deny',
+        }))
+      try {
+        setSaving(true)
+        await scope.set('noRead', cleanRules)
+        restoreSaved()
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+      } finally {
+        setSaving(false)
+      }
+    }
+
+    const countText = `${saved.length} 条规则${pendingCount > 0 ? ' · 未保存修改' : ''}`
+
+    return (
+      <Card
+        id="sabx-card-noread"
+        name="禁读规则"
+        count={countText}
+        desc="按文件名 / 路径模式限制读取：deny 直接拒绝，ask 命中时请求人工批准一次。"
+        pendingCount={pendingCount}
+        open={open}
+        onToggle={() => setOpen(!open)}
+      >
+        <div className="sabx-field">
+          <div className="sabx-field-head">
+            <span className="sabx-field-label">限制读取的文件模式（命中即按动作处理）</span>
+          </div>
+          <p className="sabx-field-hint" dangerouslySetInnerHTML={{ __html: NOREAD_HINT }} />
+          <div className="sabx-rules-table">
+            {rules.length === 0 ? (
+              <div className="sabx-empty">尚无禁读规则。点击「添加规则」新增一行。</div>
+            ) : (
+              rules.map((rule, index) => (
+                <div key={index} className="sabx-rule-row sabx-noread-row">
+                  <div className="sabx-rule-pattern">
+                    <input
+                      className="sabx-input sabx-mono"
+                      type="text"
+                      spellCheck={false}
+                      placeholder="*.pem"
+                      aria-label="禁读模式"
+                      value={rule.pattern}
+                      disabled={saving}
+                      onChange={(event) => setRule(index, { pattern: event.target.value })}
+                    />
+                  </div>
+                  <div className="sabx-rule-action">
+                    <Seg options={NOREAD_ACTIONS} selected={rule.action} onSelect={(value) => setRule(index, { action: value })} ariaLabel="动作" compact />
+                  </div>
+                  <button
+                    className="sabx-icon-btn sabx-rule-remove"
+                    type="button"
+                    aria-label="删除规则"
+                    title="删除该规则"
+                    disabled={saving}
+                    onClick={() => removeRule(index)}
+                  >
+                    <XIcon />
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+          <button className="sabx-add-row" type="button" disabled={saving} onClick={addRule}>
+            <span aria-hidden="true">＋</span> 添加规则
+          </button>
+          <p className="sabx-dir-hint-inline" style={{ marginTop: 4 }}>{NOREAD_TAIL_HINT}</p>
+        </div>
+
+        <div className="sabx-card-footer">
+          {error !== null ? (
+            <p className="sabx-card-error" role="alert">{error}</p>
+          ) : null}
+          <button className="sabx-btn sabx-btn-ghost" type="button" disabled={saving || pendingCount === 0} onClick={restoreSaved}>
+            放弃修改
+          </button>
+          <button className="sabx-btn sabx-btn-primary" type="button" disabled={saving} onClick={() => void save()}>
+            {saving ? '保存中…' : '保存禁读规则'}
+          </button>
+        </div>
+      </Card>
+    )
+  }
+}
+
+/**
  * 构建「沙箱授权」分节组件（闭包式，直接订阅 scope）。
- * 包含「授权目录」与「命令规则」两张可折叠卡片，视觉对齐
+ * 包含「授权目录」「命令规则」「禁读规则」三张可折叠卡片，视觉对齐
  * docs/config-ui-prototype.html v5。
  * @param scope - ctx.settingsScope.bind 返回的 controller。
  */
 export function makeAllowlistSection(scope: any) {
   const DirsCard = makeDirsCard(scope)
   const CommandsCard = makeCommandsCard(scope)
+  const NoReadCard = makeNoReadCard(scope)
   return function AllowlistSection() {
     return (
       <section className="sabx-section" aria-labelledby="sabx-section-title">
         <h2 className="sabx-section-heading" id="sabx-section-title">沙箱授权</h2>
         <p className="sabx-section-intro">
-          配置沙箱内的目录操作权限及命令执行权限，保存后立即生效。
+          配置沙箱内的目录操作、命令执行与文件读取限制，保存后立即生效。
         </p>
         <DirsCard />
         <CommandsCard />
+        <NoReadCard />
       </section>
     )
   }

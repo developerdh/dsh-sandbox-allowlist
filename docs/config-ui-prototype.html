@@ -508,28 +508,28 @@
           </div>
           <p class="field-hint">
             支持通配符：<code>D:\Shared\**</code>（子树）、<code>D:\Data\*</code>（一级子目录）、
-            <code>D:\Work\202?</code>（单字符）。
+            <code>D:\Archive\202?</code>（单字符）。
           </p>
           <div class="dir-list">
             <div class="dir-row">
               <span class="dir-icon" aria-hidden="true">📁</span>
-              <input class="input mono" value="C:\Users\<用户名>\.confluence-mcp" aria-label="授权目录 1" />
+              <input class="input mono" value="C:\Users\me\.confluence-mcp" aria-label="授权目录 1" />
               <button class="icon-btn" type="button" aria-label="删除"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
             </div>
             <div class="dir-row">
               <span class="dir-icon" aria-hidden="true">📁</span>
-              <input class="input mono" value="C:\Users\<用户名>\.jenkins-mcp" aria-label="授权目录 2" />
+              <input class="input mono" value="C:\Users\me\.jenkins-mcp" aria-label="授权目录 2" />
               <button class="icon-btn" type="button" aria-label="删除"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
             </div>
             <div class="dir-row">
               <span class="dir-icon" aria-hidden="true">📁</span>
-              <input class="input mono" value="C:\Users\<用户名>\.rancher-mcp" aria-label="授权目录 3" />
+              <input class="input mono" value="C:\Users\me\.rancher-mcp" aria-label="授权目录 3" />
               <button class="icon-btn" type="button" aria-label="删除"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
             </div>
             <!-- 修复②：新增行 = 绿色「＋」徽章，行边框不随焦点高亮 -->
             <div class="dir-row">
               <span class="dir-icon is-new" aria-hidden="true">＋</span>
-              <input class="input mono" value="D:\Work\2026" aria-label="授权目录 4（新）" placeholder="D:\Shared\Tools" />
+              <input class="input mono" value="D:\Archive\2026" aria-label="授权目录 4（新）" placeholder="D:\Shared\Tools" />
               <button class="icon-btn" type="button" aria-label="删除"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
             </div>
           </div>
@@ -542,7 +542,7 @@
         </div>
 
         <div class="card-footer">
-          <p class="card-error" style="display:none">示例提示：目录 D:\Work\2026 不存在。</p>
+          <p class="card-error" style="display:none">示例提示：目录 D:\Archive\2026 不存在。</p>
           <button class="btn btn-ghost" type="button">放弃修改</button>
           <button class="btn btn-primary" type="button">保存目录</button>
         </div>
@@ -829,7 +829,7 @@
   function resetDirs() {
     var list = document.querySelector('#card-dirs .dir-list');
     while (list.firstChild) list.removeChild(list.firstChild);
-    ['C:\\Users\\IDEA\\.confluence-mcp','C:\\Users\\IDEA\\.jenkins-mcp','C:\\Users\\IDEA\\.rancher-mcp']
+    ['C:\\Users\\me\\.confluence-mcp','C:\\Users\\me\\.jenkins-mcp','C:\\Users\\me\\.rancher-mcp']
       .forEach(function (p) {
         var d = document.createElement('div');
         d.className = 'dir-row';

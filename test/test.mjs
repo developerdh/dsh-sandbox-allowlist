@@ -34,6 +34,14 @@ import {
   denyReason,
 } from '../lib/command-gate.mjs'
 import {
+  NO_READ_ACTIONS,
+  NO_READ_TOOLS,
+  validateNoReadRule,
+  compileNoReadRules,
+  noReadRuleIssues,
+  resolveNoRead,
+} from '../lib/read-deny.mjs'
+import {
   stripDaclSddl,
   revokeWriteAces,
   collectRevokeDirs,
@@ -272,6 +280,95 @@ try {
   assert.throws(() => expandTrustedRoots('relative/path'), /must be absolute/)
   assert.throws(() => expandTrustedRoots('D:\\**\\cache'), /anchored too broadly/)
 
+  // ── noRead read-restriction rules ───────────────────────────────────────
+  assert.deepEqual(NO_READ_ACTIONS, ['deny', 'ask'], 'no allow action by design')
+  assert.deepEqual(NO_READ_TOOLS, ['read', 'read_image', 'edit'])
+  assert.ok(validateNoReadRule(null) !== null)
+  assert.ok(validateNoReadRule({ pattern: '', action: 'deny' }) !== null, 'empty pattern rejected')
+  assert.ok(validateNoReadRule({ pattern: '*.pem', action: 'allow' }) !== null, 'allow action is rejected on purpose')
+  assert.ok(validateNoReadRule({ pattern: '*.pem', action: 'bogus' }) !== null)
+  assert.equal(validateNoReadRule({ pattern: '*.pem', action: 'deny' }), null)
+  assert.equal(validateNoReadRule({ pattern: '.env' }), null, 'action defaults to deny')
+
+  const rules = compileNoReadRules([
+    { pattern: '*.pem', action: 'deny' },
+    { pattern: '.env*', action: 'deny' },
+    { pattern: 'id_rsa', action: 'deny' },
+    { pattern: '**/vault/**', action: 'deny' }, // contains a separator ⇒ full-path rule
+    { pattern: '*.crt', action: 'ask' },
+  ])
+  assert.equal(rules.length, 5)
+  const hit = (target) => resolveNoRead(rules, target)
+
+  // basename rules match the file name at any depth
+  assert.equal(hit('D:\\a\\b.pem').action, 'deny', 'basename rule hits nested files')
+  assert.equal(hit('secret.pem').pattern, '*.pem')
+  assert.equal(hit('nested/deep/archive.pem').action, 'deny')
+  assert.equal(hit('.env').pattern, '.env*', '".env*" also matches ".env" itself (zero-length tail)')
+  assert.equal(hit('D:\\x\\.env.local').pattern, '.env*')
+  assert.equal(hit('env.local'), null, 'not a dotfile prefix match')
+  assert.equal(hit('D:\\users\\me\\.ssh\\id_rsa.pub'), null, 'exact-name rule does not match id_rsa.pub')
+  assert.equal(hit('config/id_rsa').pattern, 'id_rsa', 'exact-name rule matches at any depth')
+  assert.equal(hit('config/my_rsa'), null, 'only the exact name matches')
+
+  // full-path rules match against the whole path (both separators accepted)
+  assert.equal(hit('D:/x/vault/a.txt').pattern, '**/vault/**')
+  assert.equal(hit('D:/x/vault/deep/a.txt').action, 'deny')
+  assert.equal(hit('D:/x/vaulty/a.txt'), null, 'segment boundary respected')
+  assert.equal(hit('vault/a.txt'), null, 'relative path without a leading separator misses the anchored pattern')
+
+  // case sensitivity follows the platform convention (win insensitive)
+  if (process.platform === 'win32') {
+    assert.equal(hit('D:\\X\\SECRET.PEM').action, 'deny', 'Windows matching is case-insensitive')
+  } else {
+    assert.equal(hit('secret.PEM'), null, 'POSIX matching is case-sensitive')
+  }
+
+  // deny outranks ask when several rules match one target
+  const mixed = compileNoReadRules([
+    { pattern: '*.pem', action: 'ask' },
+    { pattern: 'secret*', action: 'deny' },
+  ])
+  assert.deepEqual(resolveNoRead(mixed, 'secret.pem'), { pattern: 'secret*', action: 'deny' }, 'deny beats ask')
+  assert.equal(resolveNoRead(mixed, 'other.pem').action, 'ask', 'ask returned when no deny matches')
+
+  // malformed entries are skipped defensively
+  assert.equal(compileNoReadRules([{ pattern: '*.pem', action: 'allow' }, { pattern: 'x.txt' }]).length, 1)
+
+  // directory-level rules: an absolute literal dir OR an absolute dir ending
+  // in a double-star subtree deny the anchor itself AND everything beneath it;
+  // a literal absolute FILE path denies exactly that path (no descendants).
+  const win32 = process.platform === 'win32'
+  const dirRules = compileNoReadRules([
+    { pattern: win32 ? 'D:/vault/**' : '/vault/**', action: 'deny' },     // subtree form
+    { pattern: win32 ? 'D:/bank' : '/bank', action: 'deny' },             // literal dir → subtree
+    { pattern: win32 ? 'D:/etc-app.conf' : '/etc-app.conf', action: 'deny' }, // literal file (top level, no rule overlap)
+  ])
+  assert.equal(dirRules.length, 3)
+  const dhit = (target) => resolveNoRead(dirRules, target)
+  const p = (win) => win ? 'D:/' : '/'
+  assert.equal(dhit(`${p(win32)}vault`).action, 'deny', 'subtree rule denies the anchor itself (listing)')
+  assert.equal(dhit(`${p(win32)}vault/a/b.txt`).action, 'deny', 'subtree rule denies descendants')
+  assert.equal(dhit(`${p(win32)}vault/key.pem`).action, 'deny', 'file under the denied vault is denied by the subtree rule')
+  assert.equal(dhit(`${p(win32)}vaultx/a.txt`), null, 'dir segment boundary respected')
+  assert.equal(dhit(`${p(win32)}bank`).action, 'deny', 'literal dir denies itself')
+  assert.equal(dhit(`${p(win32)}bank/deep/notes.txt`).action, 'deny', 'literal dir denies descendants')
+  assert.equal(dhit(`${p(win32)}bank2/x`), null)
+  assert.equal(dhit(`${p(win32)}etc-app.conf`).action, 'deny', 'literal file path denies the exact path')
+  assert.equal(dhit(`${p(win32)}etc-app.conf.bak`), null, 'literal file path is exact (no prefix leak)')
+  if (win32) {
+    assert.equal(dhit('D:/VAULT/UP.TXT').action, 'deny', 'Windows dir matching is case-insensitive')
+  }
+
+  // breadth guards refuse whole-drive/whole-fs and every-file patterns
+  assert.equal(noReadRuleIssues([{ pattern: 'D:\\', action: 'deny' }]).length, 1, 'drive-root dir rule refused')
+  assert.equal(noReadRuleIssues([{ pattern: '/', action: 'deny' }]).length, 1, 'fs-root dir rule refused')
+  for (const wildcard of ['*', '**', '?']) {
+    assert.equal(noReadRuleIssues([{ pattern: wildcard }]).length, 1, `pure wildcard "${wildcard}" refused`)
+  }
+  assert.equal(compileNoReadRules([{ pattern: 'D:\\', action: 'deny' }, { pattern: '*.pem' }]).length, 1, 'broad rule skipped, concrete rule kept')
+  assert.equal(compileNoReadRules([{ pattern: '*', action: 'deny' }]).length, 0)
+
   // ── plugin classes ───────────────────────────────────────────────────────
   assert.ok(AllowlistPolicyService.prototype instanceof SandboxPolicyService)
   assert.ok(AllowlistFileSystem.prototype instanceof SandboxedFileSystem)
@@ -283,6 +380,7 @@ try {
     workspaceRoot: base,
     allowedDirs: [join(shared, '**')],
     commands: { default: 'ask', rules: [{ pattern: 'git *', action: 'allow' }] },
+    noRead: [{ pattern: '*.pem' }, { pattern: '**/.env', action: 'ask' }],
   })
   assert.ok('value' in result, 'config validates: ' + JSON.stringify(result.issues))
   const parsed = result.value
@@ -291,23 +389,44 @@ try {
   assert.equal(parsed.commands.rules.length, 1, 'commands config is parsed')
   assert.equal(parsed.commands.default, 'ask')
   assert.equal(parsed.strict, false, 'defaults are applied')
+  assert.equal(parsed.noRead.length, 2, 'noRead config is parsed')
+  assert.equal(parsed.noRead[0].action, 'deny', 'noRead rule action defaults to deny')
+  assert.equal(parsed.noRead[1].action, 'ask')
 
   // Config schema: rejects junk
   const bad = AllowlistPolicyService.Config['~standard'].validate({ mode: 'bogus' })
   assert.ok('issues' in bad, 'bogus mode is rejected')
+  const noReadBad = AllowlistPolicyService.Config['~standard'].validate({
+    mode: 'workspace-write',
+    workspaceRoot: base,
+    noRead: [{ pattern: '*.pem', action: 'allow' }],
+  })
+  assert.ok('issues' in noReadBad, 'noRead "allow" action is rejected by the config schema')
+  const noReadBad2 = AllowlistPolicyService.Config['~standard'].validate({
+    mode: 'workspace-write',
+    workspaceRoot: base,
+    noRead: [{ action: 'deny' }],
+  })
+  assert.ok('issues' in noReadBad2, 'noRead rule without a pattern is rejected')
 
   // Settings namespace schema: parses and carries the warning copy
   assert.equal(SETTINGS_NAMESPACE, 'sandbox-allowlist')
   const settingsResult = AllowlistSettingsSchema['~standard'].validate({
     allowedDirs: ['D:\\Shared\\**'],
     commands: { default: 'delegate', rules: [{ pattern: 'rm -rf *', action: 'deny' }] },
+    noRead: [{ pattern: '*.pem', action: 'deny' }],
   })
   assert.ok('value' in settingsResult, 'settings schema validates')
   assert.deepEqual(settingsResult.value.allowedDirs, ['D:\\Shared\\**'])
   assert.equal(settingsResult.value.commands.rules.length, 1, 'commands section validates')
+  assert.equal(settingsResult.value.noRead.length, 1, 'noRead section validates')
+  assert.ok('issues' in AllowlistSettingsSchema['~standard'].validate({
+    noRead: [{ pattern: '*.pem', action: 'allow' }],
+  }), 'settings schema rejects the "allow" action too')
   // The settings page renders schema.toJSON() — the warning must ride the wire
   const wire = JSON.stringify(AllowlistSettingsSchema.toJSON())
   assert.ok(wire.includes('安全警示'), 'settings schema carries the warning copy on the wire')
+  assert.ok(wire.includes('noRead'), 'settings schema carries the noRead section on the wire')
 
   console.log('dsh-sandbox-allowlist: all checks passed')
 } finally {
