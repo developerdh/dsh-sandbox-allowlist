@@ -1,6 +1,6 @@
 {
   "name": "dsh-sandbox-allowlist",
-  "version": "0.3.0-beta.2",
+  "version": "0.1.0-beta.1",
   "description": "DSH sandbox extension: configurable trusted writable roots outside the workspace, read restrictions, and capability-based command allow-listing for sandboxed CLI commands. 为 DSH 默认沙箱增加「沙箱授权目录」「禁读规则」与按能力类判定的「命令放行」规则。",
   "repository": {
     "type": "git",
