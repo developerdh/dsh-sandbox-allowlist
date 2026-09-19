@@ -1,0 +1,44 @@
+# dsh-sandbox-allowlist bundle patch
+#
+# This file is the `dsh.bundle.patch` layer of the published npm package:
+# install it with the official CLI —
+#
+#   dsh plugin --profile <name> add dsh-sandbox-allowlist@<version>
+#
+# — and the command reconciles `dsh.profile.bundles` against installed
+# packages, appends this package to the bundle stack, and the profile boot
+# merges THIS patch. No profile file edits are needed.
+#
+# The patch swaps the stock sandbox rows for this package's own:
+#   - `sandbox-policy`  -> policy.mjs   (trusted roots + settings namespace)
+#   - `fs-sandbox`      -> fs.mjs       (write/edit fence honors extraRoots)
+#   - `sandbox`         -> provider.mjs (Linux only: bwrap bind extension)
+#
+# Patch semantics (applyEntryPatches): a targeted patch may only override
+# fields — the plugin `name` cannot change — so swapping a plugin means
+# disabling the stock row and inserting a new row with a fresh id. `mode` /
+# `workspaceRoot` restate the base bundle's values because config replacement
+# is wholesale. The `!!js` disabled expressions keep each platform on the
+# right rows: Windows uses ACL grants (provider.mjs not mounted), Linux mounts
+# the bwrap-extending provider (stock `sandbox` disabled).
+- id: sandbox-policy
+  disabled: true
+- id: fs-sandbox
+  disabled: true
+- id: sandbox
+  disabled: !!js process.platform !== 'win32'
+- insert:
+    # NOTE: the policy row's `name` is the bare package name (not a lib/
+    # subpath) on purpose: the client-modules manifest scanner keys client
+    # halves by loader-entry name, so this row doubles as the "this package
+    # ships a client half" marker (package main = lib/policy.mjs).
+    - id: sandbox-allowlist-policy
+      name: 'dsh-sandbox-allowlist'
+      config:
+        mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
+        workspaceRoot: !!js process.cwd()
+    - id: sandbox-allowlist-fs
+      name: 'dsh-sandbox-allowlist/lib/fs.mjs'
+    - id: sandbox-allowlist-provider
+      name: 'dsh-sandbox-allowlist/lib/provider.mjs'
+      disabled: !!js process.platform === 'win32'
