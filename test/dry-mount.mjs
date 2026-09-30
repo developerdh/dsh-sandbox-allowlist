@@ -15,7 +15,7 @@
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, parse } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import PolicyPlugin from '../lib/policy.mjs'
 import FsPlugin from '../lib/fs.mjs'
@@ -31,7 +31,12 @@ const mktemp = (prefix) => {
 }
 const WORKSPACE = process.env.DSH_TEST_WORKSPACE ?? mktemp('dsh-drymount-ws-')
 const TRUSTED = process.env.DSH_TEST_TRUSTED ?? mktemp('dsh-drymount-trust-')
-const OUTSIDE = `${TRUSTED}-other\\x.txt`
+// The stock workspace-write fence allows the platform temp area BY DESIGN
+// (`os.tmpdir()` is one of its writable roots), so the "outside" target must not
+// live under it: the trusted-root check below only runs after the stock fence
+// denies, and a temp path is never denied. Anchor it on the volume root instead —
+// the fence refuses it before any I/O, so the path need not exist.
+const OUTSIDE = join(parse(tmpdir()).root, 'dsh-drymount-outside', 'x.txt')
 
 // Isolate the grants manifest (policy writes it next to the settings
 // document) so a test workspace never pollutes the real DSH home.
@@ -119,6 +124,31 @@ try {
 }
 assert.ok(denied, 'write outside the trusted root must be denied')
 console.log('write outside trusted root: DENIED as expected')
+
+// 3b. dsh 0.1.7 settings source: the host has no settings.register(), the row's
+//     own Config schema IS the settings document, and the host does NOT re-mount
+//     the row when that document changes — so the plugin must mirror the served
+//     namespace itself and follow every revision.
+const served = { allowedDirs: [`${TRUSTED}\\**`], commands: {}, noRead: [] }
+const ctx071 = new Context()
+ctx071.provide('sessionProjections', { register() {}, stateOf: () => undefined })
+ctx071.provide('systemPrompt', { context() {} })
+ctx071.provide('settings', { describe: () => [{ ns: 'sandbox-allowlist-policy', value: served }] })
+const policy071Fiber = ctx071.plugin(PolicyPlugin, { mode: 'workspace-write', workspaceRoot: WORKSPACE })
+await policy071Fiber
+const servedRoots = ctx071.sandboxPolicy.resolve().extraRoots ?? []
+assert.ok(
+  servedRoots.some((root) => root.toLowerCase() === TRUSTED.toLowerCase()),
+  `0.1.7: the served namespace drives extraRoots, got ${JSON.stringify(servedRoots)}`,
+)
+console.log(`0.1.7 settings mirror: extraRoots=${JSON.stringify(servedRoots)}`)
+// A revision must be mirrored live: emptying the list drops the roots without a remount.
+served.allowedDirs = []
+ctx071.emit('settings/document-updated', 'sandbox-allowlist-policy')
+const servedAfter = ctx071.sandboxPolicy.resolve().extraRoots ?? []
+assert.deepEqual(servedAfter, [], '0.1.7: a namespace revision is mirrored live')
+console.log('0.1.7 settings mirror: revision applied live')
+await policy071Fiber.dispose()
 
 try { if (existsSync(inside.displayPath)) unlinkSync(inside.displayPath) } catch { /* best effort */ }
 await policyFiber.dispose()

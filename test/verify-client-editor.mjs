@@ -69,8 +69,36 @@ globalThis.window = {
 new Function(source)() // eslint-disable-line no-new-func
 
 assert.ok(captured, 'exports captured')
-assert.deepEqual(captured.inject, ['slots', 'connection', 'settingsScope'], 'inject list intact')
+// The static inject list must NOT name a service the host may not provide:
+// a missing service there leaves the entry pending and fails the web boot gate
+// (dsh 0.1.7 removed `settingsScope` and the plugin would not activate).
+// `locale` IS provided by the host (dsh-client-locale) and carries the
+// dictionaries, so it belongs here.
+assert.deepEqual(captured.inject, ['slots', 'connection', 'locale'], 'static inject list has no host-optional service')
+assert.ok(
+  !captured.inject.includes('settingsScope'),
+  'settingsScope is injected dynamically, never statically',
+)
 assert.equal(typeof captured.apply, 'function', 'apply exported')
+
+// Locale stub: records the registered dictionaries and serves one active locale,
+// with the host's fallback chain (active locale, then `en`, then the key).
+const dictionaries = {}
+let activeLocale = 'zh'
+const locale = {
+  register(ns, pair) {
+    dictionaries[ns] = { ...(dictionaries[ns] || {}), ...pair }
+    return () => {}
+  },
+  bind(ns) {
+    return (key, params) => {
+      const table = dictionaries[ns] || {}
+      const template = table[activeLocale]?.[key] ?? table.en?.[key] ?? key
+      if (!params) return template
+      return template.replace(/\{(\w+)\}/g, (match, name) => (name in params ? String(params[name]) : match))
+    }
+  },
+}
 
 // Call apply() with a stubbed cordis ctx (slots + settingsScope) like the real
 // client runtime does. Must register the settings.section slot without throwing.
@@ -100,17 +128,58 @@ const settingsScope = {
 }
 const ctx = {
   settingsScope,
+  locale,
+  _injections: [],
+  effect(fn) { const dispose = fn(); return typeof dispose === 'function' ? dispose : () => {} },
+  inject(deps, fn) { this._injections.push({ deps, fn }); return () => {} },
   slots: {
     inject(name, fn) { this._injected = { name, fn } },
     register(spec, component) { registered.push({ spec, component }); return { spec, component } },
   },
 }
 captured.apply(ctx)
+// Dictionaries must be registered during apply(), before the section is used.
+const ns = dictionaries['sandbox-allowlist']
+assert.ok(ns, 'locale namespace registered')
+assert.ok(ns.zh && ns.en, 'both zh and en dictionaries registered')
+const zhKeys = Object.keys(ns.zh)
+assert.ok(zhKeys.length > 50, `dictionary covers the surface (${zhKeys.length} keys)`)
+assert.deepEqual(
+  zhKeys.filter((k) => !(k in ns.en)),
+  [],
+  'en covers every zh key',
+)
+assert.deepEqual(
+  Object.keys(ns.en).filter((k) => !(k in ns.zh)),
+  [],
+  'zh covers every en key',
+)
+// The static fallback in the host is `en`; every key must resolve in English.
+const unresolved = zhKeys.filter((k) => typeof ns.en[k] !== 'string' || ns.en[k].length === 0)
+assert.deepEqual(unresolved, [], 'no English value is missing or empty')
+const asEnglish = (key) => ns.en[key]
+assert.notEqual(asEnglish('section.title'), 'section.title', 'keys resolve, not echoed')
+assert.equal(
+  asEnglish('validate.notAbsolute').includes('{value}'),
+  true,
+  'placeholder keys keep their placeholders',
+)
 // The real runtime invokes the inject callback to register the slot.
 ctx.slots._injected.fn()
 assert.ok(registered.length === 1, 'settings.section registered')
+// The scope is bound through DYNAMIC injection: the callback only runs when the
+// host actually provides the service, and the section must already be
+// registered before that. Both settings generations are injected this way —
+// neither may appear in the static inject list (a missing static service leaves
+// the entry pending and fails the web boot gate).
+const injection = (dep) => ctx._injections.find((entry) => entry.deps.includes(dep))
+assert.ok(injection('settingsScope'), 'settingsScope is injected dynamically')
+assert.ok(injection('configForms'), 'configForms is injected dynamically (0.1.7 settings source)')
+assert.ok(!captured.inject.includes('configForms'), 'configForms stays out of the static inject list')
+assert.equal(typeof injection('configForms').fn, 'function', 'configForms callback is a function')
+injection('settingsScope').fn({ get: (name) => (name === 'settingsScope' ? settingsScope : undefined) })
 assert.equal(registered[0].spec.id, 'sandbox-allowlist')
-assert.equal(registered[0].spec.label(), '沙箱授权')
+assert.equal(registered[0].spec.label(), '沙箱授权', 'slot label follows the active locale')
 assert.equal(typeof registered[0].component, 'function', 'section component is a function')
 
 // The bound scope must support getSnapshot/subscribe/set for all three edits.
@@ -213,18 +282,134 @@ for (const id of ['sabx-card-dirs', 'sabx-card-cmds', 'sabx-card-noread']) {
   assert.equal(header.props['aria-expanded'], 'false', `${id} header announces collapsed`)
 }
 
+// Switching the host locale must switch the copy: `t` reads the active locale
+// at call time, so re-rendering under `en` yields the English surface.
+activeLocale = 'en'
+render(registered[0].component())
+const enRoot = render(registered[0].component())
+const enNodes = collect(enRoot, [])
+const enText = (text) => enNodes.some((n) => n.text !== undefined && n.text.includes(text))
+assert.equal(registered[0].spec.label(), 'Sandbox authorization', 'slot label switches to English')
+assert.ok(enText('Authorized directories'), 'English card title renders')
+assert.ok(enText('Command rules') && enText('Read restrictions'), 'English card titles render')
+assert.ok(enText('Save directories') && enText('Save command rules'), 'English save buttons render')
+assert.ok(enText('Advanced'), 'English advanced collapsible renders')
+assert.ok(enText('Auto-approve sandbox escalations'), 'English escalation switch renders')
+assert.equal(enText('授权目录'), false, 'no Chinese card title leaks into the English surface')
+activeLocale = 'zh'
+
 // Anti-drift guard: lib/client.js is a hand-written bundle that must stay in
-// step with src/client/index.tsx (the maintenance notes call this out). Every
-// user-visible marker of the command-surface UI has to exist in BOTH files.
+// step with src/client/index.tsx (the maintenance notes call this out). Both
+// carry the same i18n keys, and the dictionary must resolve to real copy in
+// the locales module as well.
 const tsx = readFileSync(join(here, '..', 'src', 'client', 'index.tsx'), 'utf8')
+const localesTs = readFileSync(join(here, '..', 'src', 'client', 'locales.ts'), 'utf8')
 for (const marker of [
-  '沙箱升级自动放行',
-  '内置能力基线',
-  '会话级命令缓存',
-  'BASELINE_OPTIONS',
+  'cmds.escalationCheck',
+  'cmds.baselineLabel',
+  'cmds.sessionLabel',
+  'baselineOptions',
 ]) {
   assert.ok(source.includes(marker), `lib/client.js carries the marker: ${marker}`)
   assert.ok(tsx.includes(marker), `src/client/index.tsx carries the marker: ${marker}`)
 }
+// Every key the bundle serves must exist in the TS dictionary too.
+for (const key of zhKeys) {
+  assert.ok(localesTs.includes(`'${key}'`), `src/client/locales.ts declares the key: ${key}`)
+}
+// No user-visible prose may remain hardcoded in the RENDER code — it belongs to
+// the dictionaries. The bundle's inlined dictionary block is excluded because it
+// legitimately carries the very same copy; the TSX is checked for `t(...)`
+// resolution instead, since its header comment still quotes the copy.
+const dictEnd = source.indexOf('    };', source.indexOf('const en = {'))
+assert.ok(dictEnd > 0, 'bundle dictionary block located')
+const renderCode = source.slice(dictEnd)
+// Keys are resolved either directly (`t('key')`) or through an option table
+// (`labelKey` / `hintKey`), which the helpers resolve with `t(option.*)`.
+const resolvesKey = (text, key) =>
+  text.includes(`t('${key}')`)
+  || text.includes(`t("${key}")`)
+  || text.includes(`labelKey: '${key}'`)
+  || text.includes(`hintKey: '${key}'`)
+for (const key of ['cmds.escalationCheck', 'cmds.baselineLabel', 'cmds.sessionLabel']) {
+  assert.ok(
+    resolvesKey(renderCode, key),
+    `lib/client.js render code resolves the key: ${key}`,
+  )
+  assert.ok(
+    resolvesKey(tsx, key),
+    `src/client/index.tsx resolves the key: ${key}`,
+  )
+}
+// The copy itself must live in the dictionary module.
+for (const prose of ['沙箱升级自动放行', '内置能力基线', '会话级命令缓存']) {
+  assert.ok(localesTs.includes(prose), `src/client/locales.ts carries the copy: ${prose}`)
+}
+
+// ---------------------------------------------------------------------------
+// 0.1.7 settings source: the host serves the row's namespace and the section
+// binds through `configForms` instead of `settingsScope`. The namespace is the
+// row id composed by the profile's patch layers, so it must be RESOLVED from
+// the served set, never assumed.
+const probeDir = 'C:\\probe-config-forms'
+const writes = []
+let formDisposed = 0
+const formStub = {
+  getSnapshot: () => ({
+    value: {
+      allowedDirs: [probeDir],
+      commands: { default: 'delegate', escalation: 'never', baseline: false, sessionCache: false, rules: [] },
+      noRead: [],
+    },
+    writable: true,
+  }),
+  subscribe: () => () => {},
+  set: (field, value) => { writes.push([field, value]); return Promise.resolve(true) },
+  dispose() { formDisposed += 1 },
+}
+const registered071 = []
+const ctx071 = {
+  locale,
+  _injections: [],
+  effect(fn) { const dispose = fn(); return typeof dispose === 'function' ? dispose : () => {} },
+  inject(deps, fn) { this._injections.push({ deps, fn }); return () => {} },
+  slots: {
+    inject(name, fn) { this._injected = { name, fn } },
+    register(spec, component) { registered071.push({ spec, component }); return { spec, component } },
+  },
+}
+captured.apply(ctx071)
+ctx071.slots._injected.fn()
+assert.equal(registered071.length, 1, 'settings.section registered on a 0.1.7 host')
+let servedRegister
+let innerDispose
+const served = new Set(['sandbox-allowlist-policy'])
+const configForms = {
+  whileServed(namespaces, register) {
+    assert.ok(namespaces.includes('sandbox-allowlist-policy'), 'the composed row id is among the candidates')
+    servedRegister = register
+    innerDispose = register(served)
+    return () => { if (typeof innerDispose === 'function') innerDispose() }
+  },
+  get(id) {
+    assert.equal(id, 'sandbox-allowlist-policy', 'the served row id is resolved and used')
+    return formStub
+  },
+}
+const cfInjection = ctx071._injections.find((entry) => entry.deps.includes('configForms'))
+assert.ok(cfInjection, 'configForms injected on a 0.1.7 host')
+cfInjection.fn({ get: (name) => (name === 'configForms' ? configForms : undefined) })
+assert.equal(typeof servedRegister, 'function', 'the namespace watch registered a callback')
+// The bound form IS the section's source: its snapshot value must surface in the
+// rendered tree (the dirs card seeds its rows from `snapshot.value`).
+render(registered071[0].component())
+const root071 = render(registered071[0].component())
+assert.ok(
+  JSON.stringify(collect(root071, [])).includes('probe-config-forms'),
+  'the section renders from the configForms snapshot, not from the detached fallback',
+)
+// Releasing the watch unbinds and disposes the host form.
+if (typeof innerDispose === 'function') innerDispose()
+assert.equal(formDisposed, 1, 'the host form is disposed when the namespace stops being served')
 
 console.log('verify-client-editor: all checks passed')
