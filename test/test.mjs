@@ -400,14 +400,24 @@ try {
   })
   assert.ok('value' in result, 'config validates: ' + JSON.stringify(result.issues))
   const parsed = result.value
+  // The three namespace fields carry `.volatile()` — the settings seam derives
+  // the plugin's namespace from exactly those marks — and schemastery validates
+  // a volatile field into a LIVE accessor, so the value comes from get().
+  // `mode`/`strict` stay plain composition values and read directly.
+  const field = (value) =>
+    (value !== null && typeof value === 'object' && !Array.isArray(value) && typeof value.get === 'function'
+      ? value.get()
+      : value)
   assert.equal(parsed.mode, 'workspace-write')
-  assert.deepEqual(parsed.allowedDirs, [join(shared, '**')])
-  assert.equal(parsed.commands.rules.length, 1, 'commands config is parsed')
-  assert.equal(parsed.commands.default, 'ask')
+  assert.deepEqual(field(parsed.allowedDirs), [join(shared, '**')])
+  const parsedCommands = field(parsed.commands)
+  assert.equal(parsedCommands.rules.length, 1, 'commands config is parsed')
+  assert.equal(parsedCommands.default, 'ask')
   assert.equal(parsed.strict, false, 'defaults are applied')
-  assert.equal(parsed.noRead.length, 2, 'noRead config is parsed')
-  assert.equal(parsed.noRead[0].action, 'deny', 'noRead rule action defaults to deny')
-  assert.equal(parsed.noRead[1].action, 'ask')
+  const parsedNoRead = field(parsed.noRead)
+  assert.equal(parsedNoRead.length, 2, 'noRead config is parsed')
+  assert.equal(parsedNoRead[0].action, 'deny', 'noRead rule action defaults to deny')
+  assert.equal(parsedNoRead[1].action, 'ask')
 
   // Config schema: rejects junk
   const bad = AllowlistPolicyService.Config['~standard'].validate({ mode: 'bogus' })

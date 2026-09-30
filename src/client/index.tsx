@@ -33,84 +33,82 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
+import { en, NS, zh } from './locales'
 
 // 客户端依赖注入声明（服务名，与 lib/client.js 的 exports.inject 一致）。
-export const inject = ['slots', 'connection', 'settingsScope']
+// 设置源有两代：`settingsScope`（dsh 0.1.7 之前）与 `configForms`（0.1.7 起，
+// 设置改由「插件 Row 自身的 Config schema」派生）。**两者都不写进静态 inject**：
+// 静态 inject 里出现宿主机没有的服务名会让该 entry 永远 pending，从而拖垮
+// web boot 门禁（dsh 0.1.7 上 dsh-sandbox-allowlist 正是因此启动失败），
+// 所以两代都走动态 ctx.inject —— 服务缺失时回调不执行，分节仍以空列表注册。
+// `locale` 是宿主自带的词典服务（dsh-client-locale），注册 zh/en 后由宿主的
+// 当前语言决定渲染哪一种，插件自己不判断语言。
+export const inject = ['slots', 'connection', 'locale']
 
 export const SETTINGS_NAMESPACE = 'sandbox-allowlist'
 
-/** 卡片 A 里的克制式安全警示 callout（承载粗体「无审批」）。 */
-export const CALL_WARN_DIRS =
-  '安全警示：授权目录会被沙箱内的 AI 代理<b>无审批</b>写入（工作区之外），请勿配置存储重要文件的目录。'
+/**
+ * 设置分节的候选 namespace。dsh 0.1.7 起 Host 的 namespace 就是插件 Row 的 id
+ * （dsh-settings: `ns: entry.options.id`），而该 id 由 profile 的补丁层合成
+ * （本包 cordis.patch.yml 插入的 row id 为 `sandbox-allowlist-policy`），
+ * 所以这里按候选名**解析**，不写死单一名字。
+ */
+export const SETTINGS_NAMESPACE_CANDIDATES = [
+  'sandbox-allowlist-policy',
+  SETTINGS_NAMESPACE,
+  'dsh-sandbox-allowlist',
+]
 
-export const DIRS_HINT =
-  '支持通配符：D:\\Shared\\**（子树）、D:\\Data\\*（一级子目录）、D:\\Archive\\202?（单字符）。'
+/**
+ * 用户可见文案一律走词典键：模块级常量只保存**键名**，在组件里用 `t(key)`
+ * 取值（`t` 在 apply 闭包内、渲染时读取宿主当前语言）。参见 locales.ts。
+ */
+export const CALL_WARN_DIRS_KEY = 'dirs.warn'
 
-export const DIRS_VALIDATE_HINT = '校验规则：Windows 路径或通配符；非法条目会在保存前标红提示，不会静默丢弃。'
+export const DIRS_HINT_KEY = 'dirs.hint'
 
-export const COMMANDS_DEFAULT_HINT =
-  'delegate 表示维持 dsh 现有行为（按需询问）；allow / ask / deny 会覆盖未命中命令的处理。'
+export const DIRS_VALIDATE_HINT_KEY = 'dirs.validateHint'
 
-export const COMMANDS_HINT =
-  '命令模式支持 <code>*</code>（任意多字符）与 <code>?</code>（单字符），如 <code>git status*</code>；' +
-  '程序名自动去掉路径、引号与 <code>.exe</code> 类后缀再参与匹配。' +
-  '按「每条独立命令」判定（复合命令按 <code>;</code> / <code>&amp;&amp;</code> / <code>|</code> 拆开分别匹配），最后一条命中的规则生效。<br>' +
-  '动作：<code>allow</code>=放行（<b>含允许它在沙箱外运行</b>）；<code>ask</code>=弹审批；<code>deny</code>=拦截。'
+export const COMMANDS_DEFAULT_HINT_KEY = 'cmd.defaultHint'
 
-export const COMMANDS_TAIL_HINT =
-  '空白行不会保存；工具留空（任意）时规则对所有 shell 工具生效。写工作区之外的路径请用「授权目录」，命令规则覆盖不了越界写入。'
+export const COMMANDS_HINT_KEY = 'cmds.hint'
 
-export const COMMANDS_ESCALATION_HINT =
-  '沙箱升级 = 命令被沙箱拒绝后，AI 带 sandbox_permissions 重试、命令将在沙箱外运行的那次审批。' +
-  '开启后：命中 allow 规则的命令、以及只读/只写工作区与授权目录内路径的命令（内置能力类），升级自动放行；' +
-  '关闭后：所有升级都弹审批。越界写入、禁读目标、deny/ask 命中永远不自动放行。'
+export const COMMANDS_TAIL_HINT_KEY = 'cmds.tailHint'
 
-export const COMMANDS_BASELINE_HINT =
-  '开启后，只读命令与「只写工作区/授权目录内路径」的命令无需任何规则即可识别（这是内置基线，不是放行升级）。关闭后完全按你写的规则判定。'
+export const COMMANDS_ESCALATION_HINT_KEY = 'cmds.escalationHint'
 
-export const COMMANDS_SESSION_HINT =
-  '开启后，你手工批准过的某条命令（完全相同的命令文本）在本会话内不再重复询问——AI 反复重试同一条命令时只问一次。'
+export const COMMANDS_BASELINE_HINT_KEY = 'cmds.baselineHint'
 
-export const NOREAD_HINT =
-  'pattern 支持 <code>*</code>（任意多个字符）与 <code>?</code>（单个字符）。' +
-  '不含路径分隔符 ⇒ 按文件名匹配任意目录深度（<code>*.pem</code>、<code>.env*</code>、<code>id_rsa*</code>）；' +
-  '含分隔符 ⇒ 按完整路径匹配（<code>D:\\Vault\\**\\*.key</code> 之类）。' +
-  '目录级：写绝对目录路径（如 <code>D:\\Vault</code>）或末尾加 <code>/**</code>，整棵子树（含目录列表）禁读。'
+export const COMMANDS_SESSION_HINT_KEY = 'cmds.sessionHint'
 
-export const NOREAD_TAIL_HINT =
-  '空 pattern 的行不会保存。不提供 allow 动作——官方默认本就允许读；' +
-  '想临时放行某个命中文件，把该条动作配成 ask（弹一次人工审批）。'
+export const NOREAD_HINT_KEY = 'noread.hint'
+
+export const NOREAD_TAIL_HINT_KEY = 'noread.tailHint'
 
 /** 工具选项（空 = 任意工具；方案 A：标签与值一致）。 */
 export const TOOL_OPTIONS = [
-  { value: '', label: '任意' },
+  { value: '', labelKey: 'common.any' },
   { value: 'bash', label: 'bash' },
   { value: 'pwsh', label: 'pwsh' },
 ]
 
 /** 规则动作（分段选择器，带语义色圆点类）。 */
 export const ACTION_OPTIONS = [
-  { value: 'allow', dot: 'sabx-dot-allow', label: 'allow', cls: 'is-allow', hint: 'allow：放行（含允许它在沙箱外运行）' },
-  { value: 'ask', dot: 'sabx-dot-ask', label: 'ask', cls: 'is-ask', hint: 'ask：弹审批' },
-  { value: 'deny', dot: 'sabx-dot-deny', label: 'deny', cls: 'is-deny', hint: 'deny：拦截' },
+  { value: 'allow', dot: 'sabx-dot-allow', label: 'allow', cls: 'is-allow', hintKey: 'common.allowHint' },
+  { value: 'ask', dot: 'sabx-dot-ask', label: 'ask', cls: 'is-ask', hintKey: 'common.askHint' },
+  { value: 'deny', dot: 'sabx-dot-deny', label: 'deny', cls: 'is-deny', hintKey: 'common.denyHint' },
 ]
 
 /** 「高级」折叠区里的布尔开关（勾选框定义）。 */
 export const BASELINE_OPTIONS = [
-  { key: 'baseline', label: '内置能力基线', hint: COMMANDS_BASELINE_HINT },
-  { key: 'sessionCache', label: '会话级命令缓存', hint: COMMANDS_SESSION_HINT },
+  { key: 'baseline', labelKey: 'cmds.baselineLabel', hintKey: 'cmds.baselineHint' },
+  { key: 'sessionCache', labelKey: 'cmds.sessionLabel', hintKey: 'cmds.sessionHint' },
 ]
 
 /** 禁读规则动作：只提供 deny / ask（allow 与默认行为无异，刻意不提供）。 */
 export const NOREAD_ACTIONS = [
   { value: 'deny', dot: 'sabx-dot-deny' },
   { value: 'ask', dot: 'sabx-dot-ask' },
-]
-
-/** 未命中规则时的默认动作（delegate 无圆点）。 */
-export const DEFAULT_OPTIONS = [
-  { value: 'delegate', dot: null },
-  ...ACTION_OPTIONS,
 ]
 
 /** 从设置 scope 快照读取当前授权目录列表。 */
@@ -175,13 +173,43 @@ export function currentNoRead(scope: any): any[] {
   }))
 }
 
-/** 返回非法原因，null 表示通过（浏览器侧轻量镜像 lib/patterns.mjs 的拒绝规则）。 */
-export function validateDirPattern(raw: string): string | null {
-  if (typeof raw !== 'string') return '目录必须是字符串。'
+/** 翻译函数签名（`ctx.locale.bind(NS)` 的返回值）。 */
+export type Translate = (key: string, params?: Record<string, string | number>) => string
+
+/**
+ * 动作分段选项（标签与 title 提示在渲染时按当前语言解析）。
+ * @param t - 词典翻译函数。
+ * @param includeDelegate - 是否在首位加上「delegate」（未命中规则的默认动作）。
+ */
+export function actionOptions(t: Translate, includeDelegate = false) {
+  const options = ACTION_OPTIONS.map((option) => ({ ...option, hint: t(option.hintKey) }))
+  return includeDelegate ? [{ value: 'delegate', dot: null as string | null }, ...options] : options
+}
+
+/** 工具下拉选项（空值 = 任意）。 */
+export function toolOptions(t: Translate) {
+  return TOOL_OPTIONS.map((option) => ({
+    ...option,
+    label: typeof option.labelKey === 'string' ? t(option.labelKey) : option.label,
+  }))
+}
+
+/** 「高级」折叠区的两个布尔开关（标签与说明均为词典键）。 */
+export function baselineOptions(t: Translate) {
+  return BASELINE_OPTIONS.map((option) => ({
+    key: option.key,
+    label: t(option.labelKey),
+    hint: t(option.hintKey),
+  }))
+}
+
+/** 返回非法原因（词典键 + 参数），null 表示通过（浏览器侧轻量镜像 lib/patterns.mjs 的拒绝规则）。 */
+export function validateDirPattern(raw: string): { key: string; params?: Record<string, string> } | null {
+  if (typeof raw !== 'string') return { key: 'validate.notString' }
   const value = raw.trim()
-  if (value.length === 0) return '目录不能为空。'
+  if (value.length === 0) return { key: 'validate.empty' }
   const isAbsolute = /^[A-Za-z]:[\\/]/u.test(value) || /^[\\/]/u.test(value)
-  if (!isAbsolute) return `「${value}」不是绝对路径（需要盘符或根开始的路径）。`
+  if (!isAbsolute) return { key: 'validate.notAbsolute', params: { value } }
   if (value.includes('**')) {
     let staticLevels = 0
     const segments = value.split(/[\\/]/u).filter((s) => s.length > 0)
@@ -189,7 +217,7 @@ export function validateDirPattern(raw: string): string | null {
       if (/[*?]/u.test(segment)) break
       staticLevels += 1
     }
-    if (staticLevels <= 1) return `「${value}」锚定过宽（** 需要锚定至少一级具名目录）。`
+    if (staticLevels <= 1) return { key: 'validate.tooWide', params: { value } }
   }
   return null
 }
@@ -267,7 +295,7 @@ export function Seg(props: {
 }
 
 /** 工具自绘下拉（原生 select 展开态无法定制，故自绘菜单；展开/选中完全可控）。 */
-export function ToolPicker(props: { value: string; disabled?: boolean; onSelect: (value: string) => void }) {
+export function ToolPicker(props: { t: Translate; value: string; disabled?: boolean; onSelect: (value: string) => void }) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
@@ -295,9 +323,10 @@ export function ToolPicker(props: { value: string; disabled?: boolean; onSelect:
     }
   }, [open])
 
+  const t = props.t
   const value = props.value || ''
-  const label = value || '任意'
-  const optionNodes = TOOL_OPTIONS.map((option) => {
+  const label = value || t('common.any')
+  const optionNodes = toolOptions(t).map((option) => {
     const selected = option.value === value
     return (
       <button
@@ -361,6 +390,7 @@ function Card(props: {
   pendingCount: number
   open: boolean
   onToggle: () => void
+  t: Translate
   children?: any
 }) {
   const classes = ['sabx-card-openable']
@@ -376,7 +406,7 @@ function Card(props: {
           </span>
           <span className="sabx-card-desc">{props.desc}</span>
         </span>
-        <span className="sabx-pending">未保存修改</span>
+        <span className="sabx-pending">{props.t('common.unsavedBadge')}</span>
         <Chevron />
       </button>
       {props.children ? <div className="sabx-card-body">{props.children}</div> : null}
@@ -388,7 +418,7 @@ function Card(props: {
  * 构建「授权目录」卡片（结构化目录行 + callout 警示 + 添加/删除/保存/放弃）。
  * @param scope - ctx.settingsScope.bind 返回的 controller。
  */
-export function makeDirsCard(scope: any) {
+export function makeDirsCard(scope: any, t: Translate) {
   return function DirsCard() {
     const [rows, setRows] = useState<{ value: string }[]>([])
     const [open, setOpen] = useState(false)
@@ -448,14 +478,15 @@ export function makeDirsCard(scope: any) {
         const value = String(row.value || '').trim()
         if (value.length === 0) return // 空行直接丢弃，不视为错误
         const issue = validateDirPattern(value)
-        if (issue !== null) problems.push({ index, message: issue })
+        if (issue !== null) problems.push({ index, message: t(issue.key, issue.params) })
         else values.push(value)
       })
       if (problems.length > 0) {
         const flags: Record<number, boolean> = {}
         problems.forEach((p) => { flags[p.index] = true })
         setInvalid(flags)
-        setError(`校验失败：${problems[0].message}${problems.length > 1 ? `（另有 ${problems.length - 1} 处）` : ''}`)
+        setError(t('error.validate', { message: problems[0].message })
+          + (problems.length > 1 ? t('error.validateMore', { count: problems.length - 1 }) : ''))
         return
       }
       try {
@@ -469,33 +500,35 @@ export function makeDirsCard(scope: any) {
       }
     }
 
-    const countText = `${saved.length} 个目录${pendingCount > 0 ? ` · ${pendingCount} 处未保存` : ''}`
+    const countText = t('dirs.count', { count: saved.length })
+      + (pendingCount > 0 ? t('dirs.countPending', { count: pendingCount }) : '')
 
     return (
       <Card
         id="sabx-card-dirs"
-        name="授权目录"
+        name={t('dirs.name')}
         count={countText}
-        desc="允许沙箱内代理直接写入的工作区外目录；仍受文件沙箱约束，写入无需审批。"
+        desc={t('dirs.desc')}
         pendingCount={pendingCount}
         open={open}
         onToggle={() => setOpen(!open)}
+        t={t}
       >
         <div className="sabx-callout-warn" role="note">
           <span className="sabx-dot sabx-dot-warn" />
-          <span dangerouslySetInnerHTML={{ __html: CALL_WARN_DIRS }} />
+          <span dangerouslySetInnerHTML={{ __html: t(CALL_WARN_DIRS_KEY) }} />
         </div>
         <div className="sabx-field">
           <div className="sabx-field-head">
-            <span className="sabx-field-label">工作区外的受信可写目录</span>
+            <span className="sabx-field-label">{t('dirs.fieldLabel')}</span>
             <button className="sabx-field-reset" type="button" disabled={saving} onClick={restoreSaved}>
-              重置为默认
+              {t('dirs.reset')}
             </button>
           </div>
-          <p className="sabx-field-hint" dangerouslySetInnerHTML={{ __html: DIRS_HINT }} />
+          <p className="sabx-field-hint" dangerouslySetInnerHTML={{ __html: t(DIRS_HINT_KEY) }} />
           <div className="sabx-dir-list">
             {rows.length === 0 ? (
-              <div className="sabx-empty">尚未授权任何目录。点击「添加目录」新增一行。</div>
+              <div className="sabx-empty">{t('dirs.empty')}</div>
             ) : (
               rows.map((row, index) => (
                 <div key={index} className="sabx-dir-row">
@@ -509,15 +542,15 @@ export function makeDirsCard(scope: any) {
                     type="text"
                     spellCheck={false}
                     value={row.value}
-                    aria-label={`授权目录 ${index + 1}`}
-                    placeholder="D:\Shared\Tools"
+                    aria-label={t('dirs.rowAria', { index: index + 1 })}
+                    placeholder={t('dirs.placeholder')}
                     onChange={(event) => setRow(index, event.target.value)}
                   />
                   <button
                     className="sabx-icon-btn"
                     type="button"
-                    aria-label="删除"
-                    title="删除该目录"
+                    aria-label={t('dirs.delete')}
+                    title={t('dirs.deleteTitle')}
                     onClick={() => removeRow(index)}
                   >
                     <XIcon />
@@ -527,19 +560,19 @@ export function makeDirsCard(scope: any) {
             )}
           </div>
           <button className="sabx-add-row" type="button" disabled={saving} onClick={addRow}>
-            <span aria-hidden="true">＋</span> 添加目录
+            <span aria-hidden="true">＋</span> {t('dirs.add')}
           </button>
-          <p className="sabx-dir-hint-inline">{DIRS_VALIDATE_HINT}</p>
+          <p className="sabx-dir-hint-inline">{t(DIRS_VALIDATE_HINT_KEY)}</p>
         </div>
         <div className="sabx-card-footer">
           {error !== null ? (
             <p className="sabx-card-error" role="alert">{error}</p>
           ) : null}
           <button className="sabx-btn sabx-btn-ghost" type="button" disabled={saving || pendingCount === 0} onClick={restoreSaved}>
-            放弃修改
+            {t('common.discard')}
           </button>
           <button className="sabx-btn sabx-btn-primary" type="button" disabled={saving} onClick={() => void save()}>
-            {saving ? '保存中…' : '保存目录'}
+            {saving ? t('common.saving') : t('dirs.save')}
           </button>
         </div>
       </Card>
@@ -550,8 +583,9 @@ export function makeDirsCard(scope: any) {
 /**
  * 构建「命令规则」卡片（默认动作分段 + 自绘工具下拉规则表 + 添加/删除/保存/放弃）。
  * @param scope - ctx.settingsScope.bind 返回的 controller。
+ * @param t - 词典翻译函数。
  */
-export function makeCommandsCard(scope: any) {
+export function makeCommandsCard(scope: any, t: Translate) {
   return function CommandsCard() {
     const [rules, setRules] = useState<any[]>([])
     const [defaultAction, setDefaultAction] = useState('delegate')
@@ -648,63 +682,67 @@ export function makeCommandsCard(scope: any) {
       }
     }
 
-    const countText = `${saved.rules.length} 条规则${pendingCount > 0 ? ' · 未保存修改' : ''}`
-
+    const countText = t('cmds.count', { count: saved.rules.length })
+      + (pendingCount > 0 ? t('cmds.countPending') : '')
+    // 动作/工具/默认动作选项的标签在渲染时解析（t 读取宿主当前语言）。
+    const actionOpts = actionOptions(t)
+    const defaultOpts = actionOptions(t, true)
     return (
       <Card
         id="sabx-card-cmds"
-        name="命令规则"
+        name={t('cmds.name')}
         count={countText}
-        desc="按「命令模式 + 动作」放行 / 询问 / 拦截 shell 命令。"
+        desc={t('cmds.desc')}
         pendingCount={pendingCount}
         open={open}
         onToggle={() => setOpen(!open)}
+        t={t}
       >
         <div className="sabx-field">
           <div className="sabx-field-head">
-            <span className="sabx-field-label">未命中任何规则时的默认动作</span>
+            <span className="sabx-field-label">{t('cmds.defaultLabel')}</span>
             <button className="sabx-field-reset" type="button" disabled={saving} onClick={resetDefault}>
-              重置为默认
+              {t('dirs.reset')}
             </button>
           </div>
-          <p className="sabx-field-hint">{COMMANDS_DEFAULT_HINT}</p>
-          <Seg options={DEFAULT_OPTIONS} selected={defaultAction} onSelect={setDefaultAction} ariaLabel="未命中规则时的默认动作" />
+          <p className="sabx-field-hint">{t(COMMANDS_DEFAULT_HINT_KEY)}</p>
+          <Seg options={defaultOpts} selected={defaultAction} onSelect={setDefaultAction} ariaLabel={t('cmds.defaultAria')} />
         </div>
 
         <div className="sabx-field">
           <div className="sabx-field-head">
-            <span className="sabx-field-label">放行规则（按顺序匹配，最后一条命中生效）</span>
+            <span className="sabx-field-label">{t('cmds.rulesLabel')}</span>
           </div>
-          <p className="sabx-field-hint" dangerouslySetInnerHTML={{ __html: COMMANDS_HINT }} />
+          <p className="sabx-field-hint" dangerouslySetInnerHTML={{ __html: t(COMMANDS_HINT_KEY) }} />
           <div className="sabx-rules-table">
             {rules.length === 0 ? (
-              <div className="sabx-empty">尚无命令规则。点击「添加规则」新增一行。</div>
+              <div className="sabx-empty">{t('cmds.empty')}</div>
             ) : (
               rules.map((rule, index) => (
                 <div key={index} className="sabx-rule-row">
                   <div className="sabx-rule-tool">
-                    <ToolPicker value={rule.tool} disabled={saving} onSelect={(value) => setRule(index, { tool: value })} />
+                    <ToolPicker t={t} value={rule.tool} disabled={saving} onSelect={(value) => setRule(index, { tool: value })} />
                   </div>
                   <div className="sabx-rule-pattern">
                     <input
                       className="sabx-input sabx-mono"
                       type="text"
                       spellCheck={false}
-                      placeholder="git *"
-                      aria-label="命令模式"
+                      placeholder={t('cmds.patternPlaceholder')}
+                      aria-label={t('cmds.patternAria')}
                       value={rule.pattern || ''}
                       disabled={saving}
                       onChange={(event) => setRule(index, { pattern: event.target.value })}
                     />
                   </div>
                   <div className="sabx-rule-action">
-                    <Seg options={ACTION_OPTIONS} selected={rule.action} onSelect={(value) => setRule(index, { action: value })} ariaLabel="动作" compact />
+                    <Seg options={actionOpts} selected={rule.action} onSelect={(value) => setRule(index, { action: value })} ariaLabel={t('cmds.actionAria')} compact />
                   </div>
                   <button
                     className="sabx-icon-btn sabx-rule-remove"
                     type="button"
-                    aria-label="删除规则"
-                    title="删除该规则"
+                    aria-label={t('cmds.removeAria')}
+                    title={t('cmds.removeTitle')}
                     disabled={saving}
                     onClick={() => removeRule(index)}
                   >
@@ -715,14 +753,14 @@ export function makeCommandsCard(scope: any) {
             )}
           </div>
           <button className="sabx-add-row" type="button" disabled={saving} onClick={addRule}>
-            <span aria-hidden="true">＋</span> 添加规则
+            <span aria-hidden="true">＋</span> {t('cmds.add')}
           </button>
-          <p className="sabx-dir-hint-inline" style={{ marginTop: 4 }}>{COMMANDS_TAIL_HINT}</p>
+          <p className="sabx-dir-hint-inline" style={{ marginTop: 4 }}>{t(COMMANDS_TAIL_HINT_KEY)}</p>
         </div>
 
         <div className="sabx-field">
           <div className="sabx-field-head">
-            <span className="sabx-field-label">沙箱升级</span>
+            <span className="sabx-field-label">{t('cmds.escalationLabel')}</span>
           </div>
           <label className="sabx-check">
             <input
@@ -731,14 +769,14 @@ export function makeCommandsCard(scope: any) {
               disabled={saving}
               onChange={(event) => setEscalateAuto(event.target.checked)}
             />
-            <span>允许沙箱升级自动放行</span>
+            <span>{t('cmds.escalationCheck')}</span>
           </label>
-          <p className="sabx-field-hint">{COMMANDS_ESCALATION_HINT}</p>
+          <p className="sabx-field-hint">{t(COMMANDS_ESCALATION_HINT_KEY)}</p>
         </div>
 
         <details className="sabx-advanced">
-          <summary>高级</summary>
-          {BASELINE_OPTIONS.map((option) => (
+          <summary>{t('cmds.advanced')}</summary>
+          {baselineOptions(t).map((option) => (
             <div key={option.key} className="sabx-advanced-item">
               <label className="sabx-check">
                 <input
@@ -761,10 +799,10 @@ export function makeCommandsCard(scope: any) {
             <p className="sabx-card-error" role="alert">{error}</p>
           ) : null}
           <button className="sabx-btn sabx-btn-ghost" type="button" disabled={saving || pendingCount === 0} onClick={restoreSaved}>
-            放弃修改
+            {t('common.discard')}
           </button>
           <button className="sabx-btn sabx-btn-primary" type="button" disabled={saving} onClick={() => void save()}>
-            {saving ? '保存中…' : '保存命令规则'}
+            {saving ? t('common.saving') : t('cmds.save')}
           </button>
         </div>
       </Card>
@@ -777,16 +815,17 @@ export function makeCommandsCard(scope: any) {
  * 返回独立卡片组件。
  * @param scope - ctx.settingsScope.bind 返回的 controller。
  */
-export function makeCommandRulesEditor(scope: any) {
-  return makeCommandsCard(scope)
+export function makeCommandRulesEditor(scope: any, t: Translate) {
+  return makeCommandsCard(scope, t)
 }
 
 /**
  * 构建「禁读规则」卡片（pattern 输入 + 紧凑 deny/ask 分段 + 删除/添加/保存/放弃）。
  * 动作刻意只有 deny / ask：官方默认本就允许读，allow 与默认行为无异，故不提供。
  * @param scope - ctx.settingsScope.bind 返回的 controller。
+ * @param t - 该词典 namespace 的翻译函数（ctx.locale.bind(NS)）。
  */
-export function makeNoReadCard(scope: any) {
+export function makeNoReadCard(scope: any, t: Translate) {
   return function NoReadCard() {
     const [rules, setRules] = useState<any[]>([])
     const [open, setOpen] = useState(false)
@@ -848,26 +887,29 @@ export function makeNoReadCard(scope: any) {
       }
     }
 
-    const countText = `${saved.length} 条规则${pendingCount > 0 ? ' · 未保存修改' : ''}`
+    const countText = t('noread.count', { count: saved.length })
+      + (pendingCount > 0 ? t('noread.countPending') : '')
+    const noreadActionOpts = NOREAD_ACTIONS
 
     return (
       <Card
         id="sabx-card-noread"
-        name="禁读规则"
+        name={t('noread.name')}
         count={countText}
-        desc="按文件名 / 路径模式限制读取：deny 直接拒绝，ask 命中时请求人工批准一次。"
+        desc={t('noread.desc')}
         pendingCount={pendingCount}
         open={open}
         onToggle={() => setOpen(!open)}
+        t={t}
       >
         <div className="sabx-field">
           <div className="sabx-field-head">
-            <span className="sabx-field-label">限制读取的文件模式（命中即按动作处理）</span>
+            <span className="sabx-field-label">{t('noread.fieldLabel')}</span>
           </div>
-          <p className="sabx-field-hint" dangerouslySetInnerHTML={{ __html: NOREAD_HINT }} />
+          <p className="sabx-field-hint" dangerouslySetInnerHTML={{ __html: t(NOREAD_HINT_KEY) }} />
           <div className="sabx-rules-table">
             {rules.length === 0 ? (
-              <div className="sabx-empty">尚无禁读规则。点击「添加规则」新增一行。</div>
+              <div className="sabx-empty">{t('noread.empty')}</div>
             ) : (
               rules.map((rule, index) => (
                 <div key={index} className="sabx-rule-row sabx-noread-row">
@@ -876,21 +918,21 @@ export function makeNoReadCard(scope: any) {
                       className="sabx-input sabx-mono"
                       type="text"
                       spellCheck={false}
-                      placeholder="*.pem"
-                      aria-label="禁读模式"
+                      placeholder={t('noread.patternPlaceholder')}
+                      aria-label={t('noread.patternAria')}
                       value={rule.pattern}
                       disabled={saving}
                       onChange={(event) => setRule(index, { pattern: event.target.value })}
                     />
                   </div>
                   <div className="sabx-rule-action">
-                    <Seg options={NOREAD_ACTIONS} selected={rule.action} onSelect={(value) => setRule(index, { action: value })} ariaLabel="动作" compact />
+                    <Seg options={noreadActionOpts} selected={rule.action} onSelect={(value) => setRule(index, { action: value })} ariaLabel={t('cmds.actionAria')} compact />
                   </div>
                   <button
                     className="sabx-icon-btn sabx-rule-remove"
                     type="button"
-                    aria-label="删除规则"
-                    title="删除该规则"
+                    aria-label={t('cmds.removeAria')}
+                    title={t('cmds.removeTitle')}
                     disabled={saving}
                     onClick={() => removeRule(index)}
                   >
@@ -901,9 +943,9 @@ export function makeNoReadCard(scope: any) {
             )}
           </div>
           <button className="sabx-add-row" type="button" disabled={saving} onClick={addRule}>
-            <span aria-hidden="true">＋</span> 添加规则
+            <span aria-hidden="true">＋</span> {t('noread.add')}
           </button>
-          <p className="sabx-dir-hint-inline" style={{ marginTop: 4 }}>{NOREAD_TAIL_HINT}</p>
+          <p className="sabx-dir-hint-inline" style={{ marginTop: 4 }}>{t(NOREAD_TAIL_HINT_KEY)}</p>
         </div>
 
         <div className="sabx-card-footer">
@@ -911,10 +953,10 @@ export function makeNoReadCard(scope: any) {
             <p className="sabx-card-error" role="alert">{error}</p>
           ) : null}
           <button className="sabx-btn sabx-btn-ghost" type="button" disabled={saving || pendingCount === 0} onClick={restoreSaved}>
-            放弃修改
+            {t('common.discard')}
           </button>
           <button className="sabx-btn sabx-btn-primary" type="button" disabled={saving} onClick={() => void save()}>
-            {saving ? '保存中…' : '保存禁读规则'}
+            {saving ? t('common.saving') : t('noread.save')}
           </button>
         </div>
       </Card>
@@ -928,16 +970,16 @@ export function makeNoReadCard(scope: any) {
  * docs/config-ui-prototype.html v5。
  * @param scope - ctx.settingsScope.bind 返回的 controller。
  */
-export function makeAllowlistSection(scope: any) {
-  const DirsCard = makeDirsCard(scope)
-  const CommandsCard = makeCommandsCard(scope)
-  const NoReadCard = makeNoReadCard(scope)
+export function makeAllowlistSection(scope: any, t: Translate) {
+  const DirsCard = makeDirsCard(scope, t)
+  const CommandsCard = makeCommandsCard(scope, t)
+  const NoReadCard = makeNoReadCard(scope, t)
   return function AllowlistSection() {
     return (
       <section className="sabx-section" aria-labelledby="sabx-section-title">
-        <h2 className="sabx-section-heading" id="sabx-section-title">沙箱授权</h2>
+        <h2 className="sabx-section-heading" id="sabx-section-title">{t('section.title')}</h2>
         <p className="sabx-section-intro">
-          配置沙箱内的目录操作、命令执行与文件读取限制，保存后立即生效。
+          {t('section.intro')}
         </p>
         <DirsCard />
         <CommandsCard />
@@ -948,26 +990,126 @@ export function makeAllowlistSection(scope: any) {
 }
 
 /**
+ * 未绑定设置 scope 时的降级控制器：分节照常渲染（空列表 + 不可保存），
+ * 一旦真实 scope 经动态注入到位并调用 bindScope，订阅者会被通知重新取值。
+ * 这样 0.1.7（无 settingsScope）与更早宿主（有 settingsScope）都能注册分节。
+ */
+function makeDetachedScope() {
+  const listeners = new Set<() => void>()
+  let bound: any = null
+  return {
+    getSnapshot: () => (bound ? bound.getSnapshot() : { value: {} }),
+    subscribe: (listener: () => void) => {
+      listeners.add(listener)
+      const off = bound && typeof bound.subscribe === 'function' ? bound.subscribe(listener) : undefined
+      return () => {
+        listeners.delete(listener)
+        if (typeof off === 'function') off()
+      }
+    },
+    set: (field: string, value: any) =>
+      bound && typeof bound.set === 'function'
+        ? bound.set(field, value)
+        : Promise.reject(new Error('settings scope unavailable')),
+    /** 绑定真实 scope 并通知所有订阅者重新渲染。 */
+    bindScope(next: any) {
+      bound = next
+      for (const listener of [...listeners]) {
+        try {
+          listener()
+        } catch {
+          // a broken subscriber must never break the section
+        }
+      }
+    },
+  }
+}
+
+/** 从 Host 已服务的 namespace 集合里解析本插件的 namespace。 */
+function resolveServedNamespace(served: Iterable<string>) {
+  const names = [...served]
+  for (const candidate of SETTINGS_NAMESPACE_CANDIDATES) {
+    if (names.includes(candidate)) return candidate
+  }
+  // 兜底：row id 由补丁层合成，任何带包名的 namespace 都认。
+  return names.find((name) => typeof name === 'string' && name.includes('sandbox-allowlist'))
+}
+
+/**
+ * 把 Host 的表单控制器接上分节的 scope 契约（getSnapshot/subscribe/set）。
+ * 读取与订阅直接透传；写入把「Host 拒绝」(false) 升级为异常——否则界面会
+ * 显示保存成功，而设置实际上没有落盘。
+ */
+function makeConfigFormScope(form: any) {
+  return {
+    getSnapshot: () => form.getSnapshot(),
+    subscribe: (listener: () => void) => form.subscribe(listener),
+    set: async (field: string, value: any) => {
+      const accepted = await form.set(field, value)
+      if (accepted === false) throw new Error('the host rejected the settings write')
+      return accepted
+    },
+  }
+}
+
+/**
  * 客户端插件入口：注册设置页分节并绑定设置 namespace。
  * 注册写法与官方设置分节一致（ctx.slots.inject + register）。
+ *
+ * 两代设置源都**不写进静态 inject**（见文件头的 inject 说明），都走动态
+ * ctx.inject —— 服务缺失时回调不执行，分节仍以空列表注册：
+ *   - 0.1.7 起：`configForms`，按 Row id 取该 entry 的表单控制器，并用
+ *     `whileServed` 只在 Host 真的服务该 namespace 时绑定；
+ *   - 0.1.7 之前：`settingsScope.bind({ namespace })`。
  */
 export function apply(ctx: any) {
-  let scope
-  try {
-    scope = ctx.settingsScope.bind({ namespace: SETTINGS_NAMESPACE })
-  } catch {
-    // bind 失败（如设置服务缺失）不能阻止分节注册 —— 组件退化为空列表编辑。
-    scope = {
-      getSnapshot: () => ({ value: {} }),
-      subscribe: () => () => {},
-      set: () => Promise.reject(new Error('settings scope unavailable')),
-    }
-  }
-  const section = makeAllowlistSection(scope)
+  // 词典注册先于分节注册：宿主按当前语言渲染，回退链末端永远是 en。
+  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'sandbox-allowlist: dictionaries')
+  // 每个 namespace 一个稳定翻译函数；渲染时读取宿主当前语言。
+  const t: Translate = ctx.locale.bind(NS)
+  const scope = makeDetachedScope()
+  const section = makeAllowlistSection(scope, t)
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'sandbox-allowlist',
     order: 30,
-    label: () => '沙箱授权',
+    label: () => t('section.title'),
   }, section))
+  // 同一时刻只有一个设置源绑定：先到者胜，卸载时只清自己那一次。
+  let boundBy: string | null = null
+  const bindScope = (source: string, next: any) => {
+    if (boundBy !== null) return boundBy === source
+    boundBy = source
+    scope.bindScope(next)
+    return true
+  }
+  const releaseScope = (source: string) => {
+    if (boundBy !== source) return
+    boundBy = null
+    scope.bindScope(null)
+  }
+  // 0.1.7 起：设置由「插件 Row 自身的 Config schema」派生。
+  ctx.inject(['configForms'], (formsCtx: any) => {
+    const forms = typeof formsCtx.get === 'function' ? formsCtx.get('configForms') : formsCtx.configForms
+    if (forms === undefined || forms === null || typeof forms.whileServed !== 'function') return
+    const off = forms.whileServed(SETTINGS_NAMESPACE_CANDIDATES, (served: Set<string>) => {
+      const namespace = resolveServedNamespace(served)
+      if (namespace === undefined) return undefined
+      const form = forms.get(namespace)
+      if (form === undefined || form === null || typeof form.set !== 'function') return undefined
+      bindScope('configForms', makeConfigFormScope(form))
+      return () => {
+        releaseScope('configForms')
+        if (typeof form.dispose === 'function') form.dispose()
+      }
+    })
+    return typeof off === 'function' ? off : undefined
+  })
+  // 0.1.7 之前：设置服务的旧名字。
+  ctx.inject(['settingsScope'], (scopeCtx: any) => {
+    const service = typeof scopeCtx.get === 'function' ? scopeCtx.get('settingsScope') : scopeCtx.settingsScope
+    if (service === undefined || service === null || typeof service.bind !== 'function') return
+    if (!bindScope('settingsScope', service.bind({ namespace: SETTINGS_NAMESPACE }))) return
+    return () => releaseScope('settingsScope')
+  })
 }

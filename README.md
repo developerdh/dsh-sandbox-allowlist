@@ -19,6 +19,9 @@ DSH（DeepSeek Harness）沙箱扩展插件。官方默认沙箱只允许写工�
 > 当前版本 `v0.1.0-beta.1`，兼容基线 dsh **0.1.5-rc.2**。
 > 📖 三类规则的完整使用说明与场景示例：
 > [docs/guides/permission-rules.md](docs/guides/permission-rules.md)
+> 🌐 English: [README.en.md](README.en.md) ·
+> [docs/guides/permission-rules.en.md](docs/guides/permission-rules.en.md) ·
+> [docs/test-plan-permissions.en.md](docs/test-plan-permissions.en.md)
 
 ## 安装
 
