@@ -322,6 +322,33 @@ web 应用加载失败；自 dsh 0.1.5 起 inject 的语义是「工厂必须先
 `test/dry-mount.mjs` 的注释；`systemPrompt` 上下文顺序从官方
 `getContextOrder('SANDBOX_POLICY')` 推导（旧宿主没有该访问器时回退常量 `110`）。
 
+**插件面板（Plugins 页）**：client 半件除设置页分节外，还向插件详情页注册两个
+官方配置槽位——`plugins.bundle.config`（key=包名，配置界面渲染在包详情页描述与
+行列表之间）与 `plugins.row.config`（key=`<包名>#sandbox-allowlist-policy`，策略行
+获得「配置」入口），两者与设置页「沙箱授权」分节是同一份数据。`summary` 视图
+（官方卡片标题下 / 行描述兜底位）返回一行说明文字。provider 行额外注册了
+平台提示：详情页 `plugins.detail.badge` 徽标（「仅 Linux 生效」）+ 行说明页
+（`row.config` 打开，交代 Linux/Windows/macOS 各自的行为）——配合 provider.mjs
+在 Windows 上的惰性空转，启用错平台时不再出现异常，只有友好说明。
+
+**行显示元数据**：插件管理器按每行的模块说明符解析 `<说明符>/locale/*.json` 的
+`meta.title` / `meta.description`（回退到该地址的 package.json）。`lib/fs.mjs` 与
+`lib/provider.mjs` 是子路径说明符，各自的中英描述放在 `lib/meta/<row>/locale/`，
+由 package.json `exports` 的精确键映射到 `<行地址>/locale/*.json`；locale 目录只能
+放语言命名的 JSON（app boot 对其他文件名直接报错）。provider 行描述明确注明
+平台限制（仅 Linux bwrap 生效，Windows 空转）。
+
+**volatile 契约（勿删）**：`AllowlistPolicyService.Config` 的三个规则字段
+（`allowedDirs` / `commands` / `noRead`）必须保持 `.volatile()`——宿主只把带
+volatile 标记的字段投影进设置表单（dsh-settings 的 `volatileForm`），一个
+volatile 字段都没有的条目不会被 `settings.describe` 下发，客户端
+`configForms.get()` 将拿不到已服务 namespace，设置页永远只读（提示
+「宿主没有提供本插件的设置表单」）。volatile 字段经 loader 校验后的值是
+cosmokit `Volatile<T>` 稳定引用（保存后宿主原地更新值，无需重挂插件），
+服务端一律通过 `_currentPatterns()` / `_currentCommands()` / `_currentNoRead()`
+读穿引用取值，任何直接读 `this.patterns` 等字段的代码在真实宿主里都会拿到
+引用对象而崩溃。
+
 ## 包结构
 
 ```
@@ -343,6 +370,8 @@ lib/read-deny.mjs   禁读规则引擎（文件名/路径匹配 + deny/ask，纯
 lib/read-gate.mjs   tools/pre-execute 拦截门：read/read_image/edit 的 deny/ask 决策
 lib/fs.mjs          替换 fs-sandbox：write/edit 栅栏放行 extraRoots + noRead 读强制层
 lib/provider.mjs    替换 sandbox（仅 Linux）：bwrap --bind 追加
+lib/meta/           行显示元数据（fs/provider 的中英描述，exports 映射为
+                    <行地址>/locale/*.json 供插件管理器读取）
 lib/patterns.mjs    通配符匹配与目录展开（共享）
 cordis.patch.yml    bundle 补丁层（安装即挂载）
 scripts/revoke.mjs  Windows 应急清理脚本（通常无需使用：撤销已自动回收）

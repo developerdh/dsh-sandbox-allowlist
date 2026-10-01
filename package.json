@@ -11,6 +11,10 @@
     ".": "./lib/policy.mjs",
     "./client": "./lib/client.js",
     "./lib/*": "./lib/*",
+    "./lib/fs.mjs/locale/en.json": "./lib/meta/fs/locale/en.json",
+    "./lib/fs.mjs/locale/zh.json": "./lib/meta/fs/locale/zh.json",
+    "./lib/provider.mjs/locale/en.json": "./lib/meta/provider/locale/en.json",
+    "./lib/provider.mjs/locale/zh.json": "./lib/meta/provider/locale/zh.json",
     "./package.json": "./package.json"
   },
   "files": [

@@ -12,7 +12,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, mkdirSync, statSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -72,7 +72,7 @@ import {
 } from '../lib/grant-manifest.mjs'
 import AllowlistPolicyService, { SETTINGS_ENTRY_ID, AllowlistSettingsSchema, CommandRuleSchema, CommandSettingsSchema } from '../lib/policy.mjs'
 import AllowlistFileSystem from '../lib/fs.mjs'
-import AllowlistSandboxProvider from '../lib/provider.mjs'
+import providerDefault, { AllowlistSandboxProvider } from '../lib/provider.mjs'
 import { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
 import { SandboxedFileSystem } from '@deepseek-ai/dsh-fs-sandbox'
 import { LocalSandboxProvider } from '@deepseek-ai/dsh-sandbox-local'
@@ -389,6 +389,54 @@ try {
   assert.ok(AllowlistPolicyService.prototype instanceof SandboxPolicyService)
   assert.ok(AllowlistFileSystem.prototype instanceof SandboxedFileSystem)
   assert.ok(AllowlistSandboxProvider.prototype instanceof LocalSandboxProvider)
+  // The default export is what the loader mounts. On win32 it must stay inert
+  // (no LocalSandboxProvider inheritance → no "sandbox" provide) so a
+  // user-level patch override that force-enables the provider row cannot
+  // collide with the stock provider and fail the boot.
+  if (process.platform === 'win32') {
+    assert.ok(!(providerDefault.prototype instanceof LocalSandboxProvider), 'default export stays inert on win32')
+  } else {
+    assert.equal(providerDefault, AllowlistSandboxProvider)
+  }
+
+  // ── settings form projection (host `volatileForm` drift guard) ───────────
+  // The host projects ONLY `.volatile()` fields into the served settings form
+  // and skips entries whose projection is empty — an unmarked rule field
+  // would leave configForms.get() with no served namespace and the settings
+  // page stuck read-only ("宿主没有提供本插件的设置表单").
+  {
+    const dict = AllowlistPolicyService.Config.dict ?? {}
+    const volatileKeys = Object.keys(dict).filter((key) => dict[key]?.meta?.volatile === true).sort()
+    assert.deepEqual(volatileKeys, ['allowedDirs', 'commands', 'noRead'], 'exactly the three rule fields are live-editable')
+    assert.ok(dict.mode?.meta?.volatile !== true && dict.workspaceRoot?.meta?.volatile !== true, 'deployment fields stay non-volatile')
+  }
+
+  // ── row display metadata (plugin-manager detail pages) ───────────────────
+  // The plugin manager resolves each bundle row's title/description from
+  // `<row module specifier>/locale/*.json` via the package exports map. The
+  // exports keys must exist, the locale directories may hold language-named
+  // JSON files only (app boot throws on any other filename), and the provider
+  // row must state its platform limitation.
+  {
+    const pkg = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8'))
+    const languageId = /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/u
+    for (const row of ['fs', 'provider']) {
+      const prefix = `./lib/${row}.mjs/locale/`
+      const localeDir = join(import.meta.dirname, '..', 'lib', 'meta', row, 'locale')
+      const files = readdirSync(localeDir)
+      assert.ok(files.every((f) => f.endsWith('.json') && languageId.test(f.slice(0, -5))), `${row}: locale dir holds language-named JSON only`)
+      for (const file of files) {
+        const exportsKey = prefix + file
+        const target = pkg.exports[exportsKey]
+        assert.ok(target, `${row}: exports maps ${exportsKey}`)
+        const parsed = JSON.parse(readFileSync(join(import.meta.dirname, '..', target.slice(2)), 'utf8'))
+        assert.ok(typeof parsed.meta?.description === 'string' && parsed.meta.description.trim() !== '', `${row}/${file}: meta.description is a non-empty string`)
+        assert.equal(parsed.meta.title, undefined, `${row}/${file}: no title override (module path stays the row title)`)
+      }
+    }
+    const providerEn = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'lib', 'meta', 'provider', 'locale', 'en.json'), 'utf8')).meta.description
+    assert.ok(providerEn.includes('bwrap') && providerEn.includes('Windows'), 'provider description states its platform limitation')
+  }
 
   // Config schema: parses a full config and applies defaults
   const result = AllowlistPolicyService.Config['~standard'].validate({
@@ -400,14 +448,19 @@ try {
   })
   assert.ok('value' in result, 'config validates: ' + JSON.stringify(result.issues))
   const parsed = result.value
+  // Volatile fields validate to live references (cosmokit Volatile<T>); read
+  // through them exactly like the service does at runtime.
+  const readField = (value) => (value !== null && typeof value === 'object' && !Array.isArray(value) && typeof value.get === 'function' ? value.get() : value)
   assert.equal(parsed.mode, 'workspace-write')
-  assert.deepEqual(parsed.allowedDirs, [join(shared, '**')])
-  assert.equal(parsed.commands.rules.length, 1, 'commands config is parsed')
-  assert.equal(parsed.commands.default, 'ask')
+  assert.deepEqual(readField(parsed.allowedDirs), [join(shared, '**')])
+  const commands = readField(parsed.commands)
+  const noRead = readField(parsed.noRead)
+  assert.equal(commands.rules.length, 1, 'commands config is parsed')
+  assert.equal(commands.default, 'ask')
   assert.equal(parsed.strict, false, 'defaults are applied')
-  assert.equal(parsed.noRead.length, 2, 'noRead config is parsed')
-  assert.equal(parsed.noRead[0].action, 'deny', 'noRead rule action defaults to deny')
-  assert.equal(parsed.noRead[1].action, 'ask')
+  assert.equal(noRead.length, 2, 'noRead config is parsed')
+  assert.equal(noRead[0].action, 'deny', 'noRead rule action defaults to deny')
+  assert.equal(noRead[1].action, 'ask')
 
   // Config schema: rejects junk
   const bad = AllowlistPolicyService.Config['~standard'].validate({ mode: 'bogus' })
