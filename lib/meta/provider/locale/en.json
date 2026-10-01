@@ -1,0 +1,5 @@
+{
+  "meta": {
+    "description": "Sandbox process provider extension: adds the authorized extra roots to the sandbox runner's write allow-list. Platform-limited: only the Linux bwrap rung extends; other rungs and macOS ignore extra roots with a one-time warning, and on Windows the stock ACL sandbox stays active so this row does nothing. Replaces the stock sandbox row on Linux/macOS."
+  }
+}

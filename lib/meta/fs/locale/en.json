@@ -1,0 +1,5 @@
+{
+  "meta": {
+    "description": "Sandbox write fence: honors the authorized extra roots on top of the workspace write boundary and enforces no-read rules (deny/ask) on reads and edits. Replaces the stock fs-sandbox row."
+  }
+}

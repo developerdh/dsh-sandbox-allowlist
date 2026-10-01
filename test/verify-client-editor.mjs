@@ -81,6 +81,7 @@ assert.equal(typeof captured.apply, 'function', 'apply exported')
 // interactive (the read-only path is exercised by the unavailable-form case
 // asserted further down).
 const registered = []
+const injected = []
 const formValue = {
   allowedDirs: [],
   commands: {
@@ -112,17 +113,45 @@ const formController = {
 const ctx = {
   configForms: { get: (id) => (id === 'sandbox-allowlist-policy' ? formController : null) },
   slots: {
-    inject(name, fn) { this._injected = { name, fn } },
+    inject(name, fn) { injected.push({ name, fn }) },
     register(spec, component) { registered.push({ spec, component }); return { spec, component } },
   },
 }
 captured.apply(ctx)
-// The real runtime invokes the inject callback to register the slot.
-ctx.slots._injected.fn()
-assert.ok(registered.length === 1, 'settings.section registered')
+// The real runtime invokes each inject callback to register its slot; apply()
+// registers the settings section plus the Plugins-page config slots.
+injected.forEach(({ fn }) => fn())
+assert.ok(registered.length === 5, 'five slots registered (settings.section + Plugins-page config/badge)')
+assert.equal(registered[0].spec.name, 'settings.section')
 assert.equal(registered[0].spec.id, 'sandbox-allowlist')
 assert.equal(registered[0].spec.label(), '沙箱授权')
 assert.equal(typeof registered[0].component, 'function', 'section component is a function')
+
+// Plugins 页配置界面：bundle.config 按包名作 key，row.config 按「包名#行id」。
+// page 视图渲染与设置页同一份分节；summary 视图给一行说明文字。
+const bundleConfig = registered.find((r) => r.spec.name === 'plugins.bundle.config')
+assert.ok(bundleConfig, 'plugins.bundle.config registered')
+assert.equal(bundleConfig.spec.key, 'dsh-sandbox-allowlist', 'bundle.config keyed by package name')
+const rowConfig = registered.find((r) => r.spec.name === 'plugins.row.config' && r.spec.key === 'dsh-sandbox-allowlist#sandbox-allowlist-policy')
+assert.ok(rowConfig, 'plugins.row.config registered for the policy row')
+const pageElement = bundleConfig.component({ view: 'page' })
+assert.equal(pageElement.type, registered[0].component, 'page view renders the shared section component')
+assert.equal(typeof bundleConfig.component({ view: 'summary' }), 'string', 'summary view renders a text line')
+
+// provider 行的平台提示：详情页徽标只认 provider 行，行说明页代替异常/沉默。
+const badge = registered.find((r) => r.spec.name === 'plugins.detail.badge')
+assert.ok(badge, 'plugins.detail.badge registered')
+const badgeElement = badge.component({ subject: { kind: 'row', row: { rowId: 'sandbox-allowlist-provider' } } })
+assert.equal(badgeElement.type, 'span', 'badge renders a span tag for the provider row')
+assert.equal(badgeElement.props.className, 'sabx-badge', 'badge uses the scoped badge style')
+assert.equal(badge.component({ subject: { kind: 'row', row: { rowId: 'sandbox-allowlist-fs' } } }), null, 'badge skips other rows')
+assert.equal(badge.component({ subject: { kind: 'bundle', pkg: { name: 'dsh-sandbox-allowlist' } } }), null, 'badge skips bundle subjects')
+const providerRow = registered.find((r) => r.spec.name === 'plugins.row.config' && r.spec.key === 'dsh-sandbox-allowlist#sandbox-allowlist-provider')
+assert.ok(providerRow, 'plugins.row.config registered for the provider row (opens the explanation page)')
+assert.equal(typeof providerRow.component({ view: 'summary' }), 'string', 'provider summary is a text line')
+const providerNotice = providerRow.component({ view: 'page' })
+assert.equal(providerNotice.type, 'div', 'provider page view renders the notice block')
+assert.equal(providerNotice.props.className, 'sabx-callout-note', 'provider notice uses the callout style')
 
 // The form controller must support getSnapshot/subscribe/set/unset for all
 // three edits (save + reset-to-default).
@@ -248,17 +277,20 @@ for (const [label, configForms] of [
   ['entry not mounted', { get: () => null }],
 ]) {
   const failedRegistered = []
+  const failedInjected = []
   const failedCtx = {
     configForms,
     slots: {
-      inject(name, fn) { this._injected = { name, fn } },
+      inject(name, fn) { failedInjected.push(fn) },
       register(spec, component) { failedRegistered.push({ spec, component }); return { spec, component } },
     },
   }
   captured.apply(failedCtx)
-  failedCtx.slots._injected.fn()
-  assert.equal(failedRegistered.length, 1, `${label}: section still registers`)
-  const degraded = render(failedRegistered[0].component())
+  failedInjected.forEach((fn) => fn())
+  assert.ok(failedRegistered.length >= 1, `${label}: section still registers`)
+  const sectionEntry = failedRegistered.find((r) => r.spec.name === 'settings.section')
+  assert.ok(sectionEntry, `${label}: settings.section present`)
+  const degraded = render(sectionEntry.component())
   const degradedNodes = collect(degraded, [])
   assert.ok(
     degradedNodes.some((n) => n.text !== undefined && n.text.includes('只读')),
