@@ -248,25 +248,30 @@ const e2eRules = [
   { pattern: 'git commit*', action: 'allow' },
   { pattern: 'Select-Object *', action: 'allow', tool: 'pwsh' },
 ]
-const settingsSection = {
-  allowedDirs: [],
-  noRead: [{ pattern: '*.pem', action: 'deny' }],
-  commands: { default: 'delegate', escalation: 'capability', baseline: true, sessionCache: true, rules: e2eRules },
+const e2eCommands = {
+  default: 'delegate',
+  escalation: 'capability',
+  baseline: true,
+  sessionCache: true,
+  rules: e2eRules,
 }
+// dsh 0.2.0: the rules live in this row's Config; the settings form projects
+// them from the same schema and saving it re-applies the plugin.
+const e2eNoRead = [{ pattern: '*.pem', action: 'deny' }]
 
 const appCtx = new Context()
-// dsh 0.1.5: the policy base class requires `sessionProjections` (it registers
+// dsh 0.2.0: the policy base class requires `sessionProjections` (it registers
 // the `sandboxMode` projection while constructing) — see test/dry-mount.mjs.
 appCtx.provide('sessionProjections', { register() {}, stateOf: () => undefined })
-appCtx.provide('systemPrompt', { context() {} })
+appCtx.provide('systemPrompt', { context() { return () => {} } })
 appCtx.provide('tools', {})
-appCtx.provide('settings', {
-  register(_ns, _schema, _options) {
-    return { get: () => settingsSection, watch: () => () => {}, update: async () => {}, replace: async () => {} }
-  },
-})
 
-const policyFiber = appCtx.plugin(PolicyPlugin, { mode: 'workspace-write', workspaceRoot: WORKSPACE })
+const policyFiber = appCtx.plugin(PolicyPlugin, {
+  mode: 'workspace-write',
+  workspaceRoot: WORKSPACE,
+  commands: e2eCommands,
+  noRead: e2eNoRead,
+})
 await policyFiber
 
 async function dispatchPre(tool, callId, command) {

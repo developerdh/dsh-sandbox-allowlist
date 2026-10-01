@@ -1,10 +1,16 @@
 /**
  * End-to-end verification of the command allow-list gate inside a real cordis
  * context: mount the policy service (which registers the `tools/pre-execute`
- * listener), provide `tools` + `settings` + `systemPrompt`, then dispatch the
+ * listener), provide `tools` + `systemPrompt`, then dispatch the
  * `tools/pre-execute` waterfall the same way dsh-tools does and assert the
  * allow/deny/ask/delegate decisions — including that an `allow` rule
  * short-circuits a downstream "ask" listener.
+ *
+ * dsh 0.2.0 model: the rules come from the plugin's Config (the settings form
+ * is a projection of that schema), and a settings save re-applies the plugin.
+ * The reload-hygiene block below therefore mounts, disposes and re-mounts
+ * against a systemPrompt stub that REFUSES a duplicate section name — the
+ * exact failure the effect-owned registrations exist to prevent.
  *
  * Run from the package root:
  *   node test/verify-command-gate.mjs
@@ -27,21 +33,20 @@ const rules = [
   { pattern: 'pnpm *', action: 'allow' },
   { pattern: 'whoami *', action: 'deny' }, // canary stand-in for any protected command (report §2.1)
 ]
-const settingsSection = { allowedDirs: [], commands: { default: 'delegate', rules } }
+// dsh 0.2.0: the rules live in this row's Config; the settings form projects
+// them from the same schema and saving it re-applies the plugin with the
+// merged config. No settings service is involved in reading them.
+const config = { mode: 'workspace-write', workspaceRoot: WORKSPACE, commands: { default: 'delegate', rules } }
 
 const ctx = new Context()
-// dsh 0.1.5: the policy base class requires `sessionProjections` (it registers
+// dsh 0.2.0: the policy base class requires `sessionProjections` (it registers
 // the `sandboxMode` projection while constructing) — see test/dry-mount.mjs.
 ctx.provide('sessionProjections', { register() {}, stateOf: () => undefined })
-ctx.provide('systemPrompt', { context() {} })
+// `context()` returns the disposer the policy registers as an effect.
+ctx.provide('systemPrompt', { context() { return () => {} } })
 ctx.provide('tools', {}) // our gate only checks ctx.on + exec; the service identity is what ctx.inject awaits
-ctx.provide('settings', {
-  register(_ns, _schema, _options) {
-    return { get: () => settingsSection, watch: () => () => {}, update: async () => {}, replace: async () => {} }
-  },
-})
 
-const policyFiber = ctx.plugin(PolicyPlugin, { mode: 'workspace-write', workspaceRoot: WORKSPACE })
+const policyFiber = ctx.plugin(PolicyPlugin, config)
 await policyFiber
 
 // A downstream "ask" listener to prove allow short-circuits it.
@@ -123,26 +128,18 @@ assert.equal(calls.downstream, 3, 'mixed allow/unknown line reaches the downstre
 // `git push` — two narrow patterns instead of one whole-string prefix that
 // would have allowed everything under `git`
 {
-  const argvSettings = {
-    allowedDirs: [],
-    commands: {
-      default: 'delegate',
-      rules: [
-        { pattern: 'git status*', action: 'allow' },
-        { pattern: 'git push*', action: 'ask' },
-      ],
-    },
+  const argvCommands = {
+    default: 'delegate',
+    rules: [
+      { pattern: 'git status*', action: 'allow' },
+      { pattern: 'git push*', action: 'ask' },
+    ],
   }
   const argvCtx = new Context()
   argvCtx.provide('sessionProjections', { register() {}, stateOf: () => undefined })
-  argvCtx.provide('systemPrompt', { context() {} })
+  argvCtx.provide('systemPrompt', { context() { return () => {} } })
   argvCtx.provide('tools', {})
-  argvCtx.provide('settings', {
-    register() {
-      return { get: () => argvSettings, watch: () => () => {}, update: async () => {}, replace: async () => {} }
-    },
-  })
-  const argvFiber = argvCtx.plugin(PolicyPlugin, { mode: 'workspace-write', workspaceRoot: WORKSPACE })
+  const argvFiber = argvCtx.plugin(PolicyPlugin, { mode: 'workspace-write', workspaceRoot: WORKSPACE, commands: argvCommands })
   await argvFiber
   const argvTerminal = (command) => argvCtx.waterfall(argvCtx, 'tools/pre-execute', { name: 'bash', arguments: { command } }, () => Promise.resolve({ kind: 'allow' }))
   assert.deepEqual(await argvTerminal('git status --porcelain'), { kind: 'allow' }, 'the status pattern allows git status')
@@ -151,46 +148,135 @@ assert.equal(calls.downstream, 3, 'mixed allow/unknown line reaches the downstre
   await argvFiber.dispose()
 }
 
-// live settings reload: the session-cache toggle must take effect WITHOUT a
-// restart (the settings watch has to re-sync the cache's enablement, otherwise
-// the switch in the settings page would silently do nothing).
+// Reload model (dsh 0.2.0): a settings save makes the Loader reconcile the
+// entry and re-apply this plugin with the merged config. Two things must hold:
+//   1. the re-applied instance reads the NEW config (no live watch exists any
+//      more — the composition is the only rule source);
+//   2. the previous round's registrations are gone before the next round runs.
+//      The systemPrompt stub below refuses a duplicate section name, which is
+//      exactly what a dropped disposer would trigger on the second mount.
 {
-  const liveSettings = {
-    allowedDirs: [],
-    commands: { default: 'delegate', sessionCache: true, rules: [] },
+  const liveSections = new Map()
+  const guardedSystemPrompt = {
+    context(section) {
+      if (liveSections.has(section.name)) throw new Error(`duplicate context section: ${section.name}`)
+      liveSections.set(section.name, section)
+      return () => { liveSections.delete(section.name) }
+    },
   }
-  let fireWatch = () => {}
   const liveCtx = new Context()
   liveCtx.provide('sessionProjections', { register() {}, stateOf: () => undefined })
-  liveCtx.provide('systemPrompt', { context() {} })
+  liveCtx.provide('systemPrompt', guardedSystemPrompt)
   liveCtx.provide('tools', {})
-  liveCtx.provide('settings', {
-    register() {
-      return {
-        get: () => liveSettings,
-        watch: (callback) => { fireWatch = callback; return () => {} },
-        update: async () => {},
-        replace: async () => {},
-      }
-    },
+
+  let liveFiber = liveCtx.plugin(PolicyPlugin, {
+    mode: 'workspace-write',
+    workspaceRoot: WORKSPACE,
+    commands: { default: 'delegate', sessionCache: true, rules: [] },
   })
-  const liveFiber = liveCtx.plugin(PolicyPlugin, { mode: 'workspace-write', workspaceRoot: WORKSPACE })
   await liveFiber
   const cache = liveCtx.sandboxPolicy._sessionCache
-  assert.equal(cache.enabled, true, 'the cache starts enabled (settings default)')
-
+  assert.equal(cache.enabled, true, 'the cache starts enabled (config default)')
   cache.remember('bash', 'acme-tool build')
   assert.ok(cache.lookup('bash', 'acme-tool build') !== null, 'a hand-approved command is remembered')
+  assert.equal(liveSections.size, 3, 'the first mount owns three prompt sections')
 
-  liveSettings.commands = { ...liveSettings.commands, sessionCache: false }
-  fireWatch()
-  assert.equal(cache.enabled, false, 'turning the setting off disables the cache live')
-  assert.equal(cache.lookup('bash', 'acme-tool build'), null, 'a disabled cache answers nothing')
-
-  liveSettings.commands = { ...liveSettings.commands, sessionCache: true }
-  fireWatch()
-  assert.equal(cache.enabled, true, 'turning it back on re-enables it live')
   await liveFiber.dispose()
+  assert.equal(liveSections.size, 0, 'disposing the fiber withdraws every prompt section')
+
+  // Re-apply with the merged config, exactly like the Loader does after a save.
+  liveFiber = liveCtx.plugin(PolicyPlugin, {
+    mode: 'workspace-write',
+    workspaceRoot: WORKSPACE,
+    commands: { default: 'delegate', sessionCache: false, rules: [] },
+  })
+  await liveFiber
+  const reloaded = liveCtx.sandboxPolicy._sessionCache
+  assert.notEqual(reloaded, cache, 'the reload builds a fresh instance')
+  assert.equal(reloaded.enabled, false, 'the reloaded instance honors the new sessionCache:false')
+  assert.equal(reloaded.lookup('bash', 'acme-tool build'), null, 'the fresh cache carries no previous session memory')
+  assert.equal(liveSections.size, 3, 'the second mount registers its own prompt sections without a duplicate error')
+
+  await liveFiber.dispose()
+  assert.equal(liveSections.size, 0, 'the reload is disposable too')
+}
+
+// Auto review sessions: the official LLM reviewer owns the whole decision —
+// our rules (allow AND deny alike) must delegate, while a non-Auto session on
+// the same context keeps the exact current behavior. The probe reads
+// `ctx.permissionPresets.current(session)` and compares it with the AUTO preset
+// id preset.mjs resolves from `@deepseek-ai/dsh-permission-presets` (a dev
+// dependency of this repo; its fallback literal is the same verified string).
+{
+  const autoCtx = new Context()
+  autoCtx.provide('sessionProjections', { register() {}, stateOf: () => undefined })
+  autoCtx.provide('systemPrompt', { context() { return () => {} } })
+  autoCtx.provide('tools', {})
+  // Same service name + contract the official auto-review layer relies on.
+  autoCtx.provide('permissionPresets', { current: (session) => session?.permissionPreset })
+  const autoFiber = autoCtx.plugin(PolicyPlugin, config)
+  await autoFiber
+
+  let autoDownstream = 0
+  autoCtx.on('tools/pre-execute', (_exec, next) => {
+    autoDownstream += 1
+    return Promise.resolve({ kind: 'ask' })
+  })
+  const autoDispatch = (command, preset) =>
+    autoCtx.waterfall(
+      autoCtx,
+      'tools/pre-execute',
+      { name: 'bash', arguments: { command }, agent: { session: { permissionPreset: preset } } },
+      () => Promise.resolve({ kind: 'allow' }),
+    )
+
+  // Auto session: an `allow` rule must NOT short-circuit — the official
+  // reviewer (here: the downstream listener) must see the call.
+  let decision = await autoDispatch('git status --porcelain', 'auto')
+  assert.deepEqual(decision, { kind: 'ask' }, 'Auto session: our allow rule delegates to the official reviewer')
+  assert.equal(autoDownstream, 1, 'Auto session: the allow rule did not short-circuit the downstream listener')
+
+  // Auto session: a deny rule must not fire either (全放行给 auto review).
+  decision = await autoDispatch('whoami /all', 'auto')
+  assert.deepEqual(decision, { kind: 'ask' }, 'Auto session: our deny rule delegates too')
+  assert.equal(autoDownstream, 2)
+
+  // Non-Auto session on the same context: rules keep working unchanged.
+  decision = await autoDispatch('whoami /all', 'workspace-write')
+  assert.equal(decision.kind, 'deny', 'non-Auto session: the deny rule still fires')
+  assert.equal(autoDownstream, 2, 'non-Auto session: the deny short-circuits the downstream listener')
+
+  decision = await autoDispatch('git status --porcelain', 'workspace-write')
+  assert.deepEqual(decision, { kind: 'allow' }, 'non-Auto session: the allow rule still applies')
+
+  // Agentless call (no agent/session on the exec): probe cannot answer —
+  // fall back to the exact current behavior (judge by rules).
+  decision = await autoCtx.waterfall(
+    autoCtx,
+    'tools/pre-execute',
+    { name: 'bash', arguments: { command: 'whoami /all' } },
+    () => Promise.resolve({ kind: 'allow' }),
+  )
+  assert.equal(decision.kind, 'deny', 'agentless call: no session => current behavior (deny rule fires)')
+
+  // Host without the presets service: the probe reads undefined => current
+  // behavior even when the session object claims Auto (cannot happen on a
+  // real host, but the degradation must not throw).
+  const bareCtx = new Context()
+  bareCtx.provide('sessionProjections', { register() {}, stateOf: () => undefined })
+  bareCtx.provide('systemPrompt', { context() { return () => {} } })
+  bareCtx.provide('tools', {})
+  const bareFiber = bareCtx.plugin(PolicyPlugin, config)
+  await bareFiber
+  decision = await bareCtx.waterfall(
+    bareCtx,
+    'tools/pre-execute',
+    { name: 'bash', arguments: { command: 'whoami /all' }, agent: { session: { permissionPreset: 'auto' } } },
+    () => Promise.resolve({ kind: 'allow' }),
+  )
+  assert.equal(decision.kind, 'deny', 'no presets service => not Auto => current behavior')
+  await bareFiber.dispose()
+  await autoFiber.dispose()
 }
 
 console.log('verify-command-gate: all checks passed')

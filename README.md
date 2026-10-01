@@ -141,6 +141,12 @@ sandbox-allowlist:
 | `capability`（默认） | 每条独立命令都命中 `allow` 规则（allow 自带升级授权），或都是良性能力类（`read`，或目标都在工作区/授权目录内的 `local-write`）⇒ 自动放行；解释器、网络、包管理器、未知程序、解析不了的结构 ⇒ 弹审批 |
 | `never` | 永不自动放行（所有升级都弹审批） |
 
+**官方 Auto review 会话（dsh 0.2.0+ 可选层 `@deepseek-ai/dsh-experimental-auto-review`）**：
+会话处于官方 Auto review 预设时，本插件的**命令规则整体不参与判定**——allow/ask/deny 全部
+委让给官方的逐调用 LLM 审查（按 `permissionPresets.current(session) === 'auto'` 探测，与
+官方审查门同源；预设服务缺失或探测失败一律视为非 Auto，行为不变）。授权目录与禁读规则
+不受影响：Auto 会话无沙箱（工作区外写天然放行），禁读锚定部署默认模式、继续生效。
+
 **会话级命令缓存（`sessionCache`，默认开）**：你手工批准过的某条命令（**完全相同
 的命令文本**）在本会话内不再重复询问。任何参数变化都算另一条命令，需重新批准。
 

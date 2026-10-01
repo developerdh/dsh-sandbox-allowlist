@@ -5,7 +5,7 @@
  *   - stub `window.__ModuleLoader__.load` and `require('react')` with a
  *     lightweight element-tree createElement + hooks,
  *   - run the factory, assert `inject` and `apply` are intact,
- *   - call `apply` with a stubbed ctx (slots + settingsScope), register the
+ *   - call `apply` with a stubbed ctx (slots + configForms), register the
  *     slot, then RENDER the registered component recursively and assert the
  *     three card articles (incl. the noRead card) appear with their copy.
  *
@@ -69,37 +69,48 @@ globalThis.window = {
 new Function(source)() // eslint-disable-line no-new-func
 
 assert.ok(captured, 'exports captured')
-assert.deepEqual(captured.inject, ['slots', 'connection', 'settingsScope'], 'inject list intact')
+assert.deepEqual(captured.inject, ['slots', 'connection', 'configForms'], 'inject list intact')
 assert.equal(typeof captured.apply, 'function', 'apply exported')
 
-// Call apply() with a stubbed cordis ctx (slots + settingsScope) like the real
+// Call apply() with a stubbed cordis ctx (slots + configForms) like the real
 // client runtime does. Must register the settings.section slot without throwing.
+//
+// dsh 0.2.0 contract: `ctx.configForms.get(<loader entry id>)` returns a form
+// controller whose snapshot carries { status, value, user, revision, writable,
+// mode }. We hand the component a ready/host/writable form so every card is
+// interactive (the read-only path is exercised by the unavailable-form case
+// asserted further down).
 const registered = []
-const settingsScope = {
-  bind: () => ({
-    getSnapshot: () => ({
-      value: {
-        allowedDirs: [],
-        commands: {
-          default: 'delegate',
-          escalation: 'capability',
-          baseline: true,
-          sessionCache: true,
-          // Two pattern rules, so the rows (and their inputs) render.
-          rules: [
-            { pattern: 'git status*', action: 'allow' },
-            { pattern: 'pnpm *', action: 'allow' },
-          ],
-        },
-        noRead: [],
-      },
-    }),
-    subscribe: () => () => {},
-    set: async () => {},
+const formValue = {
+  allowedDirs: [],
+  commands: {
+    default: 'delegate',
+    escalation: 'capability',
+    baseline: true,
+    sessionCache: true,
+    // Two pattern rules, so the rows (and their inputs) render.
+    rules: [
+      { pattern: 'git status*', action: 'allow' },
+      { pattern: 'pnpm *', action: 'allow' },
+    ],
+  },
+  noRead: [],
+}
+const formController = {
+  getSnapshot: () => ({
+    status: 'ready',
+    value: formValue,
+    user: {},
+    revision: 1,
+    writable: true,
+    mode: 'host',
   }),
+  subscribe: () => () => {},
+  set: async () => true,
+  unset: async () => true,
 }
 const ctx = {
-  settingsScope,
+  configForms: { get: (id) => (id === 'sandbox-allowlist-policy' ? formController : null) },
   slots: {
     inject(name, fn) { this._injected = { name, fn } },
     register(spec, component) { registered.push({ spec, component }); return { spec, component } },
@@ -113,11 +124,12 @@ assert.equal(registered[0].spec.id, 'sandbox-allowlist')
 assert.equal(registered[0].spec.label(), '沙箱授权')
 assert.equal(typeof registered[0].component, 'function', 'section component is a function')
 
-// The bound scope must support getSnapshot/subscribe/set for all three edits.
-const bound = settingsScope.bind({ namespace: 'sandbox-allowlist' })
-assert.equal(typeof bound.getSnapshot, 'function')
-assert.equal(typeof bound.subscribe, 'function')
-assert.equal(typeof bound.set, 'function')
+// The form controller must support getSnapshot/subscribe/set/unset for all
+// three edits (save + reset-to-default).
+assert.equal(typeof formController.getSnapshot, 'function')
+assert.equal(typeof formController.subscribe, 'function')
+assert.equal(typeof formController.set, 'function')
+assert.equal(typeof formController.unset, 'function')
 
 // Recursively render the component tree (function types are component calls)
 // and collect every element node plus every text leaf.
@@ -225,6 +237,33 @@ for (const marker of [
 ]) {
   assert.ok(source.includes(marker), `lib/client.js carries the marker: ${marker}`)
   assert.ok(tsx.includes(marker), `src/client/index.tsx carries the marker: ${marker}`)
+}
+
+// Degradation guard (dsh 0.2.0): when configForms is missing, throws, or has
+// no entry for this plugin, apply() must still register the section and the
+// component must render read-only without throwing.
+for (const [label, configForms] of [
+  ['configForms absent', undefined],
+  ['get() throws', { get() { throw new Error('no form service') } }],
+  ['entry not mounted', { get: () => null }],
+]) {
+  const failedRegistered = []
+  const failedCtx = {
+    configForms,
+    slots: {
+      inject(name, fn) { this._injected = { name, fn } },
+      register(spec, component) { failedRegistered.push({ spec, component }); return { spec, component } },
+    },
+  }
+  captured.apply(failedCtx)
+  failedCtx.slots._injected.fn()
+  assert.equal(failedRegistered.length, 1, `${label}: section still registers`)
+  const degraded = render(failedRegistered[0].component())
+  const degradedNodes = collect(degraded, [])
+  assert.ok(
+    degradedNodes.some((n) => n.text !== undefined && n.text.includes('只读')),
+    `${label}: renders the read-only notice`,
+  )
 }
 
 console.log('verify-client-editor: all checks passed')
