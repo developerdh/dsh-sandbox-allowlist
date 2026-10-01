@@ -49,6 +49,11 @@ const ctx = new Context()
 // the `sandboxMode` projection while constructing) — see test/dry-mount.mjs.
 ctx.provide('sessionProjections', { register() {}, stateOf: () => undefined })
 ctx.provide('systemPrompt', { context() { return () => {} } })
+// AllowlistFileSystem declares `static inject = [...SandboxedFileSystem.inject,
+// 'fileUploads']` (KI-1 registerAgentResolver shim), so a bare cordis context
+// must provide a `fileUploads` stub or the fs row stays PENDING and `ctx.fs`
+// is never provided.
+ctx.provide('fileUploads', { registerAgentResolver() {} })
 ctx.provide('tools', {}) // activates the policy's tools/pre-execute gate registrations
 
 // dsh 0.2.0: the rules live in this row's Config (the settings form projects

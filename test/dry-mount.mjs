@@ -63,6 +63,11 @@ ctx.provide('sessionProjections', { register() {}, stateOf: () => undefined })
 // enough to activate the registration (the real deployment provides the real
 // one). `context()` returns the disposer the policy registers as an effect.
 ctx.provide('systemPrompt', { context() { return () => {} } })
+// AllowlistFileSystem declares `static inject = [...SandboxedFileSystem.inject,
+// 'fileUploads']` (KI-1 registerAgentResolver shim), so a bare cordis context
+// must provide a `fileUploads` stub or the fs row stays PENDING and `ctx.fs`
+// is never provided.
+ctx.provide('fileUploads', { registerAgentResolver() {} })
 
 const policyFiber = ctx.plugin(PolicyPlugin, {
   mode: 'workspace-write',
