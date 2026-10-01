@@ -69,7 +69,11 @@ globalThis.window = {
 new Function(source)() // eslint-disable-line no-new-func
 
 assert.ok(captured, 'exports captured')
-assert.deepEqual(captured.inject, ['slots', 'connection', 'configForms'], 'inject list intact')
+// The static inject list may only name services the host always provides:
+// `locale` (dsh-client-locale) carries the dictionaries, `configForms` is the
+// 0.2.0 settings source — both are guaranteed on the target host family. A
+// host-optional service here would leave the entry pending and fail web boot.
+assert.deepEqual(captured.inject, ['slots', 'connection', 'configForms', 'locale'], 'inject list intact')
 assert.equal(typeof captured.apply, 'function', 'apply exported')
 
 // Call apply() with a stubbed cordis ctx (slots + configForms) like the real
@@ -110,14 +114,66 @@ const formController = {
   set: async () => true,
   unset: async () => true,
 }
+// Locale stub: records the registered dictionaries and serves one active
+// locale with the host's fallback chain (active locale, then `en`, then the
+// key itself) — mirroring dsh-client-locale's contract.
+const dictionaries = {}
+let activeLocale = 'zh'
+const locale = {
+  register(ns, pair) {
+    dictionaries[ns] = { ...(dictionaries[ns] || {}), ...pair }
+    return () => {}
+  },
+  bind(ns) {
+    return (key, params) => {
+      const table = dictionaries[ns] || {}
+      const template = table[activeLocale]?.[key] ?? table.en?.[key] ?? key
+      if (!params) return template
+      return template.replace(/\{(\w+)\}/g, (match, name) => (name in params ? String(params[name]) : match))
+    }
+  },
+}
+const effectStub = (fn) => {
+  const dispose = fn()
+  return typeof dispose === 'function' ? dispose : () => {}
+}
+
 const ctx = {
   configForms: { get: (id) => (id === 'sandbox-allowlist-policy' ? formController : null) },
+  locale,
+  effect: effectStub,
   slots: {
     inject(name, fn) { injected.push({ name, fn }) },
     register(spec, component) { registered.push({ spec, component }); return { spec, component } },
   },
 }
 captured.apply(ctx)
+// Dictionaries must be registered during apply(), before the section is used.
+const ns = dictionaries['sandbox-allowlist']
+assert.ok(ns, 'locale namespace registered')
+assert.ok(ns.zh && ns.en, 'both zh and en dictionaries registered')
+const zhKeys = Object.keys(ns.zh)
+assert.ok(zhKeys.length > 50, `dictionary covers the surface (${zhKeys.length} keys)`)
+assert.deepEqual(
+  zhKeys.filter((k) => !(k in ns.en)),
+  [],
+  'en covers every zh key',
+)
+assert.deepEqual(
+  Object.keys(ns.en).filter((k) => !(k in ns.zh)),
+  [],
+  'zh covers every en key',
+)
+// The static fallback in the host is `en`; every key must resolve in English.
+const unresolved = zhKeys.filter((k) => typeof ns.en[k] !== 'string' || ns.en[k].length === 0)
+assert.deepEqual(unresolved, [], 'no English value is missing or empty')
+const asEnglish = (key) => ns.en[key]
+assert.notEqual(asEnglish('section.title'), 'section.title', 'keys resolve, not echoed')
+assert.equal(
+  asEnglish('validate.notAbsolute').includes('{value}'),
+  true,
+  'placeholder keys keep their placeholders',
+)
 // The real runtime invokes each inject callback to register its slot; apply()
 // registers the settings section plus the Plugins-page config slots.
 injected.forEach(({ fn }) => fn())
@@ -236,6 +292,21 @@ assert.ok(
 const checkboxes = elements.filter((el) => el.type === 'input' && el.props && el.props.type === 'checkbox')
 assert.equal(checkboxes.length, 3, 'the escalation switch plus the two advanced checkboxes render as plain checkboxes')
 
+// Switching the host locale must switch the copy: `t` reads the active locale
+// at call time, so re-rendering under `en` yields the English surface.
+activeLocale = 'en'
+const enRoot = render(registered[0].component())
+const enNodes = collect(enRoot, [])
+const enText = (text) => enNodes.some((n) => n.text !== undefined && n.text.includes(text))
+assert.equal(registered[0].spec.label(), 'Sandbox authorization', 'slot label switches to English')
+assert.ok(enText('Authorized directories'), 'English card title renders')
+assert.ok(enText('Command rules') && enText('Read restrictions'), 'English card titles render')
+assert.ok(enText('Save directories') && enText('Save command rules') && enText('Save read restrictions'), 'English save buttons render')
+assert.ok(enText('Advanced'), 'English advanced collapsible renders')
+assert.ok(enText('Auto-approve sandbox escalations'), 'English escalation switch renders')
+assert.equal(enText('授权目录'), false, 'no Chinese card title leaks into the English surface')
+activeLocale = 'zh'
+
 // All three cards default to COLLAPSED: article carries no `is-open` class,
 // so the CSS rule `.sabx-card-openable:not(.is-open) .sabx-card-body` hides the
 // body until the header is clicked.
@@ -255,17 +326,51 @@ for (const id of ['sabx-card-dirs', 'sabx-card-cmds', 'sabx-card-noread']) {
 }
 
 // Anti-drift guard: lib/client.js is a hand-written bundle that must stay in
-// step with src/client/index.tsx (the maintenance notes call this out). Every
-// user-visible marker of the command-surface UI has to exist in BOTH files.
+// step with src/client/index.tsx (the maintenance notes call this out). Both
+// carry the same i18n keys, and the dictionary must resolve to real copy in
+// the locales module as well.
 const tsx = readFileSync(join(here, '..', 'src', 'client', 'index.tsx'), 'utf8')
+const localesTs = readFileSync(join(here, '..', 'src', 'client', 'locales.ts'), 'utf8')
 for (const marker of [
-  '沙箱升级自动放行',
-  '内置能力基线',
-  '会话级命令缓存',
-  'BASELINE_OPTIONS',
+  'cmds.escalationCheck',
+  'cmds.baselineLabel',
+  'cmds.sessionLabel',
+  'baselineOptions',
 ]) {
   assert.ok(source.includes(marker), `lib/client.js carries the marker: ${marker}`)
   assert.ok(tsx.includes(marker), `src/client/index.tsx carries the marker: ${marker}`)
+}
+// Every key the bundle serves must exist in the TS dictionary too.
+for (const key of zhKeys) {
+  assert.ok(localesTs.includes(`'${key}'`), `src/client/locales.ts declares the key: ${key}`)
+}
+// No user-visible prose may remain hardcoded in the RENDER code — it belongs to
+// the dictionaries. The bundle's inlined dictionary block is excluded because it
+// legitimately carries the very same copy; the TSX is checked for `t(...)`
+// resolution instead, since its header comment still quotes the copy.
+// Keys are resolved either directly (`t('key')`) or through an option table
+// (`labelKey` / `hintKey`), which the helpers resolve with `t(option.*)`.
+const dictEnd = source.indexOf('    };', source.indexOf('const en = {'))
+assert.ok(dictEnd > 0, 'bundle dictionary block located')
+const renderCode = source.slice(dictEnd)
+const resolvesKey = (text, key) =>
+  text.includes(`t('${key}')`)
+  || text.includes(`t("${key}")`)
+  || text.includes(`labelKey: '${key}'`)
+  || text.includes(`hintKey: '${key}'`)
+for (const key of ['cmds.escalationCheck', 'cmds.baselineLabel', 'cmds.sessionLabel']) {
+  assert.ok(
+    resolvesKey(renderCode, key),
+    `lib/client.js render code resolves the key: ${key}`,
+  )
+  assert.ok(
+    resolvesKey(tsx, key),
+    `src/client/index.tsx resolves the key: ${key}`,
+  )
+}
+// The copy itself must live in the dictionary module.
+for (const prose of ['允许沙箱升级自动放行', '内置能力基线', '会话级命令缓存']) {
+  assert.ok(localesTs.includes(prose), `src/client/locales.ts carries the copy: ${prose}`)
 }
 
 // Degradation guard (dsh 0.2.0): when configForms is missing, throws, or has
@@ -280,6 +385,8 @@ for (const [label, configForms] of [
   const failedInjected = []
   const failedCtx = {
     configForms,
+    locale,
+    effect: effectStub,
     slots: {
       inject(name, fn) { failedInjected.push(fn) },
       register(spec, component) { failedRegistered.push({ spec, component }); return { spec, component } },

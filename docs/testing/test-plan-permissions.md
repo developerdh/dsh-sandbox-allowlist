@@ -5,12 +5,13 @@
 > 复合、混合命令形态（`;` `&&` `&` `||` `|` 链、`$()`/反引号替换、heredoc、重定向、
 > env 前缀、元程序展开、fail-closed 结构、宽规则形状等）。
 >
-> **适用版本**：v0.1.0-beta.1 及以上（单层 `allow` = 放行**并含沙箱升级授权**的语义；
-> 规则只有 `pattern` 一种选择器）。测试实现语义请先读 `README.md` 的
-> 「命令放行」与「禁读规则」章节。
+> **适用版本**：v0.1.0-beta.1 及以上，已适配 dsh 0.2.0-rc.2（单层 `allow` = 放行
+> **并含沙箱升级授权**的语义；规则选择器为 `pattern`（必填）+ 可选 `tool`
+> （`bash` / `pwsh`，省略 = 两个 shell 都生效），本方案用例均省略 `tool`）。
+> 测试实现语义请先读 `README.md` 的「命令放行」与「禁读规则」章节。
 >
 > **如何在会话中引用**：给执行 agent 下达类似指令即可——
-> 「阅读 `<repo>/docs/test-plan-permissions.md`，按方案执行权限配置测试验证，
+> 「阅读 `<repo>/docs/testing/test-plan-permissions.md`，按方案执行权限配置测试验证，
 > 测试目录使用 `<测试目录>`；先做阶段 A/B，阶段 C 需在 dsh web 运行时进行。」
 
 **占位符约定**（执行前替换为真实值；替换后的真实路径**不得**写进任何提交的文档，
@@ -52,11 +53,14 @@
 
 ### 1.1 前置检查
 
-- [ ] dsh web 已用本仓库代码启动过至少一次（工作区经 junction + `link:` 挂进
-  profile，**改 `lib/*.mjs` 后必须重启**才生效；仅改设置实时生效）；
+- [ ] dsh web 已用本仓库代码启动过至少一次（0.2.0 起 profile 补丁层改动走 HMR
+  自动热应用；改 `lib/*.mjs` 后建议重启一次确保干净加载——运行中重载若遇到
+  KI-1 的「Agent resolver is already registered」提示，重启客户端即恢复，
+  见 `docs/issues/ki-1-session-controller-reload-race.md`；仅改设置实时
+  生效，规则字段为 volatile 直通，无需重启）；
 - [ ] 会话沙箱模式为 `workspace-write`（`allowedDirs` 与 noRead 在
   `danger-full-access` 下不生效，`read-only` 下全拒写）；
-- [ ] `node --version` 可用（≥ 18，需 ESM 顶层 await）。
+- [ ] `node --version` 可用（≥ 20.11，package.json engines 要求）。
 
 ### 1.2 创建测试目录结构
 
@@ -101,8 +105,11 @@ npm test && npm run test:dry-mount && npm run test:patch \
 ```
 
 **通过标准**：8 个套件全部通过；`test:matrix` 输出 `44 rows, 0 mismatches`；
-`test:patch` 输出包含 `plugin is mounted in the profile (4 patches, last layer)`
-（未挂载 profile 的环境输出会不同，记录即可，不算失败）。
+`test:patch` 需先设 `DSH_INSTALL_ANCHOR`（指向 dsh 安装内的
+`<dsh-install>/node_modules/@deepseek-ai/dsh/package.json`；未设置时套件直接
+提示并退出，这不算失败）；插件已挂载时输出包含
+`plugin is mounted in the profile (4 patches, last layer)`，未挂载环境输出
+preflight 提示，记录即可，不算失败。
 
 任何套件失败 ⇒ 先修复再继续，不要带着红测试往下走。
 

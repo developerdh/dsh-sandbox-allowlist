@@ -1,0 +1,110 @@
+# 发布流水线：收到 v* tag 时测试、打包并发布到 npmjs.org，同时创建 GitHub Release。
+#
+# 触发链：本地升 package.json version → git tag v<version> && git push origin <tag>
+# → 本 workflow 安装依赖 → typecheck + 测试 → npm publish（prepublishOnly 会再跑一遍
+# 测试套件兜底）→ 创建 GitHub Release 并挂 npm pack 的 tgz 产物
+# （可直接 `dsh plugin add <tgz>` 安装）。
+#
+# workflow_dispatch 支持在 Actions 页手动跑（仅安装/测试/打包校验，不发布）。
+# 前置配置：仓库 Settings → Secrets and variables → Actions 添加 NPM_TOKEN
+# （npmjs.com 的 Automation token，具备 dsh-sandbox-allowlist 的发布权限）。
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write # gh release create 需要写 Release
+
+jobs:
+  release:
+    runs-on: windows-latest # 主平台：测试顺带覆盖 win32 ACL 代码路径，与真机验证口径一致
+    defaults:
+      run:
+        shell: bash # 发布/Release 脚本是 bash 语法；Windows runner 默认是 PowerShell
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Release 正文要读自上个 tag 以来的提交与 tag 附注
+
+      - uses: pnpm/action-setup@v4 # 版本取自 package.json 的 packageManager 字段
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: 'https://registry.npmjs.org' # npm publish 凭据写入 .npmrc（NODE_AUTH_TOKEN）
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: |
+          npm test
+          npm run test:command-gate
+          npm run test:approval-gate
+          npm run test:matrix
+          npm run test:read-gate
+          npm run test:client
+          npm run test:dry-mount
+
+      - name: Pack
+        run: npm pack
+
+      - name: Publish to npm
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if npm view "dsh-sandbox-allowlist@$VERSION" version >/dev/null 2>&1; then
+            echo "dsh-sandbox-allowlist@$VERSION 已在 npm 上，跳过发布"
+          else
+            PUBLISH_ARGS=()
+            case "$VERSION" in *-*) PUBLISH_ARGS+=(--tag prerelease);; *) PUBLISH_ARGS+=(--tag latest);; esac
+            npm publish "${PUBLISH_ARGS[@]}"
+          fi
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ARGS=()
+          case "${GITHUB_REF_NAME}" in *-*) ARGS+=(--prerelease);; esac # 0.2.0-beta.1 → 预发布
+
+          # Release 正文 = 附注 tag 上的版本说明（打 annotated tag 可带说明）+ 更新内容（自上个 tag 以来的提交）+ 安装方式
+          TAG_MSG=$(git tag -l --format='%(contents)' "${GITHUB_REF_NAME}")
+          PREV=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          RANGE="${GITHUB_REF_NAME}"
+          [ -n "$PREV" ] && RANGE="${PREV}..${GITHUB_REF_NAME}"
+          CHANGES=$(git log --format='- %s' $RANGE)
+          VER="${GITHUB_REF_NAME#v}"
+          BODY="${TAG_MSG}"
+          [ -n "$CHANGES" ] && BODY="${BODY}
+
+          ## 更新内容
+
+          ${CHANGES}"
+          BODY="${BODY}
+
+          ## 安装
+
+          前置：dsh 0.2.0-rc.2+（web profile）。
+
+          \`\`\`sh
+          dsh plugin --profile <name> add dsh-sandbox-allowlist@${VER}
+          \`\`\`"
+
+          # 幂等：tag 重打/重触发时已存在 Release 则仅覆盖资产，不报错
+          if gh release view "${GITHUB_REF_NAME}" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" -R "$GITHUB_REPOSITORY" dsh-sandbox-allowlist-*.tgz --clobber
+            gh release edit "${GITHUB_REF_NAME}" -R "$GITHUB_REPOSITORY" --notes "$BODY"
+          else
+            gh release create "${GITHUB_REF_NAME}" -R "$GITHUB_REPOSITORY" --title "${GITHUB_REF_NAME}" --notes "$BODY" "${ARGS[@]}" dsh-sandbox-allowlist-*.tgz
+          fi

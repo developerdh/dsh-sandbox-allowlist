@@ -1,8 +1,11 @@
 # dsh-sandbox-allowlist 三种权限规则使用说明
 
 本插件在官方 DSH 沙箱之上追加了三类**可配置权限规则**，全部在设置页
-「沙箱授权」分节（设置 namespace `sandbox-allowlist`，落盘
-`$DSH_HOME/settings.yaml`）编辑，保存后实时生效：
+「沙箱授权」分节编辑，保存后实时生效。配置以 profile 补丁层中本插件行
+（`<profile>/cordis.patch.yml` 的 `sandbox-allowlist-policy` 行）的 `config` 为源，
+设置页保存即写回该层——设置页与 YAML 是同一份数据；旧版全局
+`$DSH_HOME/settings.yaml` 的 `sandbox-allowlist:` 段已随宿主迁移机制废弃
+（原文件被改名为 `settings.yaml.imported`）：
 
 | 规则 | 解决什么问题 | 一句话 | 面向对象 |
 |---|---|---|---|
@@ -43,7 +46,8 @@ sandbox-allowlist:
 - Linux：bwrap 追加 `--bind <目录> <目录>`；
 - 只在 `workspace-write` 模式放行；`read-only` 仍全拒写，`danger-full-access`
   无沙箱则无需本清单；
-- 通配符每次调用前懒展开（TTL 缓存）；锚定盘符/根且带 `**` 的模式会被拒绝
+- 通配符每次调用前懒展开（TTL 缓存，`expandTtlMs` 可调，默认 5 秒）；不存在的
+  路径跳过并告警（`strict: true` 改为抛错）；锚定盘符/根且带 `**` 的模式会被拒绝
   （防整盘遍历）。
 
 ### 场景示例
@@ -103,6 +107,18 @@ sandbox-allowlist:
 | `ask` | 强制弹审批 |
 | `deny` | 拦截并给出原因 |
 
+### 判定流程（三层）
+
+1. **拆解（结构）**：按 `;` `&&` `&` `|` `||` 与换行拆成独立命令（引号/转义感知）；
+   `$( … )` 与反引号里的子命令递归展开后一起判；重定向**解析目标路径**并与
+   工作区 ∪ 授权目录比对；heredoc 正文按数据处理；`FOO=bar cmd` 剥掉前缀再判。
+   解析不了的结构（进程替换、`$((`、引号不配对、递归超深）一律 **fail-closed**
+   回落人工。
+2. **能力分类（语义）**：每条命令归入 `read` / `local-write` / `repo-exec` /
+   `external` / `opaque` / `destructive` / `unknown`——未知一律不自动放行。
+3. **聚合（兜底）**：`deny` > `ask` > `allow` > `default`。任一独立命令命中 deny
+   就整体拦截——复合命令里藏着的危险命令不会被前面的 allow 前缀掩盖。
+
 ### 注意
 - **命令字符串会**规范化**（折叠空格；Windows 大小写不敏感），程序 token 会先归一化
   （去路径、去引号、去 `.exe`/`.cmd` 类后缀）再参与匹配——`git *` 也能匹配
@@ -141,6 +157,13 @@ sandbox-allowlist:
 兜底**（`uniq 输入 输出`、`git log --output=…`、`tree -o 文件` 这类"看着是读其实
 会写"的参数位置无法逐程序解析，宁可多问一次）。
 
+### 官方 Auto review 会话（dsh 0.2.0+ 可选层）
+会话处于官方 Auto review 预设（`@deepseek-ai/dsh-experimental-auto-review`）时，
+本插件的**命令规则整体不参与判定**——allow/ask/deny 全部委让给官方的逐调用 LLM
+审查（按 `permissionPresets.current(session) === 'auto'` 探测，与官方审查门同源；
+预设服务缺失或探测失败一律视为非 Auto，行为不变）。授权目录与禁读规则不受影响：
+Auto 会话无沙箱（工作区外写天然放行），禁读锚定部署默认模式、继续生效。
+
 **环境变量前缀**（`FOO=bar cmd`）只拦能力类兜底：显式写的 `allow` 规则照常生效。
 
 **元程序展开**：`pnpm run <script>` / `pnpm <script>` 会读工作区 `package.json` 的
@@ -150,6 +173,23 @@ sandbox-allowlist:
 ### 会话级命令缓存（`sessionCache`）
 你手工批准过的某条命令（**完全相同的命令文本**）在本会话内不再重复询问；参数
 有任何变化都算另一条命令。
+
+### 决策轨迹与规则提案
+- 每次判定记入 `$DSH_HOME/sandbox-allowlist-decisions.jsonl`（判定、原因、每条
+  命令的能力类与是否可升级）；按 2 MiB 自动轮转、保留 3 个历史副本，不会无限
+  增长；
+- 需人工确认时，弹窗文本会附上**为什么没自动放行**以及**可以添加哪条规则**；
+- 反复手工批准同一形状的命令会累计成候选规则，写入
+  `$DSH_HOME/sandbox-allowlist-proposals.json` 并出现在模型上下文里
+  （**只提案，绝不自动应用**）。
+
+> **设计取舍**：一条 `allow` 规则的授权力度，取决于它放行的是「命令文本」还是
+> 「命令真正做的事」。本插件把决策拆成结构 / 语义 / 兜底三个可分别验证的子问题
+> （分别对应 `lib/command-analyze.mjs` / `lib/command-classes.mjs` /
+> `lib/command-decision.mjs`）。在此之上，**授权越靠近「路径」越稳**：与其放行
+> 某个命令形状，不如把它要写的目录加入授权目录——目录授权由文件沙箱强制执行，
+> 命令根本不会被拒绝，也就永远不会请求升级审批。命令规则的定位是补齐目录授权
+> 覆盖不到的残余（只读侦察、构建/测试、跨网络操作等）。
 
 ### 场景示例
 4. **日常放行**：pnpm / npm / git（非推送）免询问：
@@ -239,6 +279,16 @@ sandbox-allowlist:
 - 护栏：锚定盘符/根（`D:\`、`/`）与纯通配 `*`/`**`/`?` 会被**拒绝并告警**，
   不会出现"配了等于全禁/配了没用"的静默坑。
 
+### 分层强制（deny 双层生效，ask 单层生效）
+1. **fs 强制层**：命中 `deny` 的目标，`read` / `read_image` / `edit`（隐含读旧
+   内容）、目录级 listDir、以及 **write 覆盖已存在文件**（需回读旧内容生成 diff）
+   一律抛 `FS_READ_DENIED`；**新建**同名/同格式文件仍允许（限制的是读不是写）；
+2. **pre-execute 门**：`read` / `read_image` / `edit` 在参数 `file_path` 命中时
+   立即返回决策——`deny` 直接拦（不执行任何文件 I/O），`ask` 走审批
+   （allowed-once，批准后 fs 层不会二次拦截）；
+3. **模型提示上下文**：禁读清单注入系统提示，模型知道哪些不能读、哪些要问人，
+   避免反复尝试。
+
 ### 覆盖范围与边界
 | 操作 | 命中 deny 规则时 |
 |---|---|
@@ -255,7 +305,9 @@ sandbox-allowlist:
 **无法按文件名/扩展名在水面下拦截**（Windows ACL deny / bwrap 目录隐藏属于后续
 方向）。对真正敏感的内容，首选把文件/目录**移出模型可达范围**，或用命令规则
 拦截明显的读取命令，再叠一层 noRead 作为模型工具的兜底。
-另：会话切到 `danger-full-access`（显式全信任）后禁读不生效，与写沙箱一致。
+另：目录级禁读下，其**父级**目录列表仍会显示该目录名（模型能看到「存在这个
+目录」，但读不进任何内容）；会话切到 `danger-full-access`（显式全信任）后
+禁读不生效，与写沙箱一致。
 
 ### 场景示例
 6. **密钥/凭据**：工作区里散落的 `.env`、`*.pem`、`id_rsa*` 一律不许读：
@@ -337,8 +389,8 @@ sandbox-allowlist:
 
 | 问题 | 答案 |
 |---|---|
-| 在哪里配置？ | 设置页「沙箱授权」分节（三个卡片），或直接编辑 `$DSH_HOME/settings.yaml` 的 `sandbox-allowlist:` 段 |
-| 什么时候生效？ | 保存即实时生效（服务端策略热读取；服务端模块代码更新需重启 dsh web 才加载） |
+| 在哪里配置？ | 设置页「沙箱授权」分节（三个卡片），保存写回 profile 补丁层（`<profile>/cordis.patch.yml`）中本插件行的 `config`；旧版全局 `settings.yaml` 的 `sandbox-allowlist:` 段已随宿主迁移废弃 |
+| 什么时候生效？ | 保存即实时生效（规则字段 volatile 直通 + Loader 重载）；更新服务端模块代码（`lib/*.mjs`）建议重启一次 dsh web 干净加载 |
 | 规则没起作用？ | 看「已知限制」边界（shell/grep 拦不到）；确认会话不是 `danger-full-access`；确认配置没有被 schema 拒绝（保存报错）或模式没被护栏丢弃（服务日志有 `noRead rule ignored` 告警） |
 | 为什么没有 allow？ | 默认就允许读，allow 是空操作；需要例外用 ask |
 | 禁读能拦住 shell 吗？ | 不能按文件名拦（本期）；请移出可达范围或另配命令规则 |
@@ -349,4 +401,4 @@ sandbox-allowlist:
 | 老是被同一条命令问？ | 手工批准一次后本会话不再问（`sessionCache`，默认开）；想长期免问就看 `$DSH_HOME/sandbox-allowlist-proposals.json` 里的候选规则 |
 | 想放行 `git status` 但拦住 `git push`？ | 用两条窄 pattern 规则：`git status*` → allow 写前面，`git push*` → ask 写后面；规则是"最后一条命中生效"，更细的放后面 |
 
-配套文档：README（安装/原理/包结构）、`docs/guides/` 与 `docs/upgrade/` 下的设计文档。
+配套文档：[README](../../README.md)（安装/快速开始）、[架构与安全边界](architecture.md)（工作原理/安全边界/已知限制）、[开发与测试](../development.md)（测试/构建/内部契约）。
