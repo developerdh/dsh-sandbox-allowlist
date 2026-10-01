@@ -260,6 +260,10 @@ DSH 沙箱允许写哪里 = 允许清单（allow-list）。本插件向清单**�
 
 ## 已知限制
 
+- 运行中安装 / 卸载 / 启停本插件时，dsh 桌面端可能弹出 session-controller
+  「Agent resolver is already registered」的失败提示——这是 dsh 运行时在动态更换
+  `fs` 服务提供方时的重启竞态（KI-1），操作状态已落盘，**重启客户端即恢复**，
+  详见 [docs/known-issue-ki-1-session-controller-reload-race.md](docs/known-issue-ki-1-session-controller-reload-race.md)。
 - **Windows**：授权目录必须存在且归当前用户所有（需能改 DACL）；撤销回收失败
   （如目录易主、无法改写 DACL）的目录保留在 grants 清单中，下次对账自动重试，
   已删除的目录直接视为已回收。回收宿主优先系统自带 Windows PowerShell 5.1，
