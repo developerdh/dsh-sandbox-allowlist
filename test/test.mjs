@@ -70,7 +70,7 @@ import {
   setWorkspaceGrants,
   diffGranted,
 } from '../lib/grant-manifest.mjs'
-import AllowlistPolicyService, { SETTINGS_NAMESPACE, AllowlistSettingsSchema, CommandRuleSchema, CommandSettingsSchema } from '../lib/policy.mjs'
+import AllowlistPolicyService, { SETTINGS_ENTRY_ID, AllowlistSettingsSchema, CommandRuleSchema, CommandSettingsSchema } from '../lib/policy.mjs'
 import AllowlistFileSystem from '../lib/fs.mjs'
 import AllowlistSandboxProvider from '../lib/provider.mjs'
 import { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
@@ -425,8 +425,16 @@ try {
   })
   assert.ok('issues' in noReadBad2, 'noRead rule without a pattern is rejected')
 
-  // Settings namespace schema: parses and carries the warning copy
-  assert.equal(SETTINGS_NAMESPACE, 'sandbox-allowlist')
+  // Settings form source: dsh 0.2.0 keys the form by the Loader entry id and
+  // projects the schema from this row's `static Config` — never from a
+  // registration API.
+  assert.equal(SETTINGS_ENTRY_ID, 'sandbox-allowlist-policy')
+  const configWire = JSON.stringify(AllowlistPolicyService.Config.toJSON())
+  assert.ok(configWire.includes('安全警示'), 'the form schema carries the warning copy on the wire')
+  assert.ok(configWire.includes('noRead'), 'the form schema carries the noRead section on the wire')
+  assert.ok(configWire.includes('命令放行规则'), 'the form schema carries the command-rule copy on the wire')
+
+  // Standalone rule-section schema: parses and carries the same warning copy
   const settingsResult = AllowlistSettingsSchema['~standard'].validate({
     allowedDirs: ['D:\\Shared\\**'],
     commands: { default: 'delegate', rules: [{ pattern: 'rm -rf *', action: 'deny' }] },

@@ -36,31 +36,24 @@ const T = (name) => join(scratch, name)
 
 // deny `*.pem` and every `.env*`; ask for `*.crt`; deny two directories under
 // the scratch root (a double-star subtree rule and a literal-dir rule).
-const settingsSection = {
-  allowedDirs: [],
-  commands: { default: 'delegate', rules: [] },
-  noRead: [
-    { pattern: '*.pem', action: 'deny' },
-    { pattern: '.env*', action: 'deny' },
-    { pattern: '*.crt', action: 'ask' },
-    { pattern: join(scratch, 'vault', '**'), action: 'deny' },
-    { pattern: join(scratch, 'bank'), action: 'deny' },
-  ],
-}
+const noReadRules = [
+  { pattern: '*.pem', action: 'deny' },
+  { pattern: '.env*', action: 'deny' },
+  { pattern: '*.crt', action: 'ask' },
+  { pattern: join(scratch, 'vault', '**'), action: 'deny' },
+  { pattern: join(scratch, 'bank'), action: 'deny' },
+]
 
 const ctx = new Context()
-// dsh 0.1.5: the policy base class requires `sessionProjections` (it registers
+// dsh 0.2.0: the policy base class requires `sessionProjections` (it registers
 // the `sandboxMode` projection while constructing) — see test/dry-mount.mjs.
 ctx.provide('sessionProjections', { register() {}, stateOf: () => undefined })
-ctx.provide('systemPrompt', { context() {} })
+ctx.provide('systemPrompt', { context() { return () => {} } })
 ctx.provide('tools', {}) // activates the policy's tools/pre-execute gate registrations
-ctx.provide('settings', {
-  register(_ns, _schema, _options) {
-    return { get: () => settingsSection, watch: () => () => {}, update: async () => {}, replace: async () => {} }
-  },
-})
 
-const policyFiber = ctx.plugin(PolicyPlugin, { mode: 'workspace-write', workspaceRoot: WORKSPACE })
+// dsh 0.2.0: the rules live in this row's Config (the settings form projects
+// them from the same schema); no settings service is involved in reading them.
+const policyFiber = ctx.plugin(PolicyPlugin, { mode: 'workspace-write', workspaceRoot: WORKSPACE, noRead: noReadRules })
 await policyFiber
 const fsFiber = ctx.plugin(FsPlugin, {})
 await fsFiber

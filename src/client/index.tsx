@@ -23,21 +23,31 @@
  *   - 样式由 lib/client.js 注入作用域化 <style>（.sabx-* 前缀），全部使用
  *     dsw 运行时令牌（--dsw-alias-* / --dsw-specific-*，带十六进制 fallback）。
  *
- * 数据流不变：绑定 `sandbox-allowlist` 设置 namespace → 表单编辑 →
- * scope.set('allowedDirs', [...]) / scope.set('commands', {...}) /
- * scope.set('noRead', [...]) → 写入用户设置文档（$DSH_HOME/settings.yaml）→
- * 服务端策略**实时生效**。
+ * 数据流（dsh 0.2.0）：`ctx.configForms.get(<loader entry id>)` 取本插件条目的
+ * 配置表单 → 表单编辑 → `form.set('allowedDirs' | 'commands' | 'noRead', …)`
+ * 原子写回宿主 profile → 宿主 reconcile → 插件重载并带上合并后的 Config →
+ * 服务端策略即时生效。整组字段用 `unset(field)` 恢复组合默认值（「重置为默认」），
+ * 覆盖标记按快照 `user` 的键存在性判断，不比较值。
  *
- * 注意：组件定义在 apply 闭包内、直接订阅绑定的 scope —— 不依赖 slots
+ * 降级契约（官方 `ConfigFormSnapshot`）：`status` 为 `loading` 时只读占位，
+ * `unavailable`（宿主未提供该 namespace）或 `writable === false`（memory 模式，
+ * 远端连接偏好进程本地）时整节只读并说明原因——绝不假装保存成功。
+ *
+ * 注意：组件定义在 apply 闭包内、直接订阅表单 controller —— 不依赖 slots
  * 系统向组件注入 props 的转换契约，任何情况下都不会因 props 缺失而崩溃。
  */
 
 import { useEffect, useRef, useState } from 'react'
 
 // 客户端依赖注入声明（服务名，与 lib/client.js 的 exports.inject 一致）。
-export const inject = ['slots', 'connection', 'settingsScope']
+export const inject = ['slots', 'connection', 'configForms']
 
-export const SETTINGS_NAMESPACE = 'sandbox-allowlist'
+/**
+ * 本插件在 profile 中的 Loader 条目 id（cordis.patch.yml 的
+ * `sandbox-allowlist-policy` 行）。dsh 0.2.0 按条目 id 索引设置表单，
+ * 表单 schema 由该行的 `static Config` 投影而来。
+ */
+export const SETTINGS_ENTRY_ID = 'sandbox-allowlist-policy'
 
 /** 卡片 A 里的克制式安全警示 callout（承载粗体「无审批」）。 */
 export const CALL_WARN_DIRS =
@@ -113,20 +123,127 @@ export const DEFAULT_OPTIONS = [
   ...ACTION_OPTIONS,
 ]
 
-/** 从设置 scope 快照读取当前授权目录列表。 */
-export function currentDirs(scope: any): string[] {
-  let snapshot
+/** 表单快照的客户端视图（结构对齐官方 `ConfigFormSnapshot`）。 */
+export type FormSnapshotView = {
+  status: 'loading' | 'ready' | 'unavailable'
+  value: any
+  user: any
+  revision: number | undefined
+  writable: boolean
+  mode: 'host' | 'memory'
+}
+
+/**
+ * 表单不可用时的降级快照（服务缺失 / 条目未挂载）：只读、无值。
+ */
+export const UNAVAILABLE_SNAPSHOT: FormSnapshotView = {
+  status: 'unavailable',
+  value: undefined,
+  user: undefined,
+  revision: undefined,
+  writable: false,
+  mode: 'memory',
+}
+
+/**
+ * 读取一次配置表单快照，并把任何异常/缺失收敛为 {@link UNAVAILABLE_SNAPSHOT}：
+ * 设置页永远不能因表单服务不可用而崩溃。
+ * @param form - `ctx.configForms.get(entryId)` 返回的 controller（可为 null）。
+ */
+export function formSnapshot(form: any): FormSnapshotView {
   try {
-    snapshot = scope.getSnapshot()
+    if (!form || typeof form.getSnapshot !== 'function') return UNAVAILABLE_SNAPSHOT
+    const snapshot = form.getSnapshot()
+    if (!snapshot || typeof snapshot !== 'object') return UNAVAILABLE_SNAPSHOT
+    const status = snapshot.status === 'ready' || snapshot.status === 'loading' ? snapshot.status : 'unavailable'
+    return {
+      status,
+      value: snapshot.value,
+      user: snapshot.user,
+      revision: snapshot.revision,
+      writable: snapshot.writable === true,
+      mode: snapshot.mode === 'host' ? 'host' : 'memory',
+    }
   } catch {
-    return []
+    return UNAVAILABLE_SNAPSHOT
   }
-  const value = snapshot && snapshot.value
+}
+
+/** 订阅快照替换；表单不可用时返回空 disposer（不抛、不崩）。 */
+export function subscribeForm(form: any, listener: () => void): () => void {
+  try {
+    if (form && typeof form.subscribe === 'function') {
+      const dispose = form.subscribe(listener)
+      if (typeof dispose === 'function') return dispose
+    }
+  } catch {
+    // 订阅失败按不可用处理
+  }
+  return () => {}
+}
+
+/**
+ * 表单当前是否可写。官方契约：memory 模式（远端连接的偏好进程本地）永不
+ * 接受写入，`status !== 'ready'` 时也没有可用的原生通路。
+ */
+export function isWritable(form: any): boolean {
+  const snapshot = formSnapshot(form)
+  return snapshot.status === 'ready' && snapshot.writable === true
+}
+
+/**
+ * 只读原因（供页面说明），可写时为 null。
+ */
+export function readOnlyReason(form: any): string | null {
+  const snapshot = formSnapshot(form)
+  if (snapshot.status === 'loading') return '正在载入插件设置…'
+  if (snapshot.status === 'unavailable') {
+    return '宿主没有提供本插件的设置表单（条目未挂载或设置服务不可用），本页暂时只读。'
+  }
+  if (snapshot.writable !== true) {
+    return '当前连接的配置为进程本地（memory）模式：官方写入通路只读，修改不会被写回宿主配置。请在宿主本机页面或配置文件中编辑。'
+  }
+  return null
+}
+
+/**
+ * 该字段是否被用户层覆盖。官方语义：快照 `user` 里**键在场**即覆盖——即使值
+ * 恰好等于组合默认值也仍是覆盖，比较值看不出来。
+ */
+export function fieldOverridden(form: any, field: string): boolean {
+  const user = formSnapshot(form).user
+  return user !== null && typeof user === 'object' && Object.prototype.hasOwnProperty.call(user, field)
+}
+
+/**
+ * 原子写回一个字段。`set` 返回 `false` 表示被拒（revision 冲突 / 不可写），
+ * 必须当作失败处理；传输层异常则直接抛出。
+ */
+export async function saveField(form: any, field: string, value: any): Promise<void> {
+  if (!isWritable(form)) throw new Error(readOnlyReason(form) ?? '当前连接不可写。')
+  const accepted = await form.set(field, value)
+  if (accepted !== true) {
+    throw new Error('保存被拒绝：配置已在别处修改（revision 冲突）或宿主未接受本次写入，请重新载入后再试。')
+  }
+}
+
+/** 清除用户层覆盖，让字段回退到组合默认值（「重置为默认」）。 */
+export async function resetField(form: any, field: string): Promise<void> {
+  if (!isWritable(form)) throw new Error(readOnlyReason(form) ?? '当前连接不可写。')
+  const accepted = await form.unset(field)
+  if (accepted !== true) {
+    throw new Error('恢复默认被拒绝：配置已在别处修改（revision 冲突）或宿主未接受本次写入，请重新载入后再试。')
+  }
+}
+
+/** 从表单快照读取当前授权目录列表。 */
+export function currentDirs(form: any): string[] {
+  const value = formSnapshot(form).value
   return Array.isArray(value && value.allowedDirs) ? value.allowedDirs : []
 }
 
-/** 从设置 scope 快照读取当前命令规则与开关。 */
-export function currentCommands(scope: any): {
+/** 从表单快照读取当前命令规则与开关。 */
+export function currentCommands(form: any): {
   default: string
   rules: any[]
   escalation: string
@@ -134,13 +251,7 @@ export function currentCommands(scope: any): {
   sessionCache: boolean
 } {
   const fallback = { default: 'delegate', rules: [], escalation: 'capability', baseline: true, sessionCache: true }
-  let snapshot
-  try {
-    snapshot = scope.getSnapshot()
-  } catch {
-    return fallback
-  }
-  const value = snapshot && snapshot.value
+  const value = formSnapshot(form).value
   const commands = value && value.commands
   if (!commands) return fallback
   const rules = Array.isArray(commands.rules)
@@ -159,15 +270,9 @@ export function currentCommands(scope: any): {
   }
 }
 
-/** 从设置 scope 快照读取当前禁读规则（[{ pattern, action }]，动作归一为 deny/ask）。 */
-export function currentNoRead(scope: any): any[] {
-  let snapshot
-  try {
-    snapshot = scope.getSnapshot()
-  } catch {
-    return []
-  }
-  const value = snapshot && snapshot.value
+/** 从表单快照读取当前禁读规则（[{ pattern, action }]，动作归一为 deny/ask）。 */
+export function currentNoRead(form: any): any[] {
+  const value = formSnapshot(form).value
   const rules = Array.isArray(value && value.noRead) ? value.noRead : []
   return rules.map((rule: any) => ({
     pattern: rule && typeof rule.pattern === 'string' ? rule.pattern : '',
@@ -386,9 +491,9 @@ function Card(props: {
 
 /**
  * 构建「授权目录」卡片（结构化目录行 + callout 警示 + 添加/删除/保存/放弃）。
- * @param scope - ctx.settingsScope.bind 返回的 controller。
+ * @param form - `ctx.configForms.get(SETTINGS_ENTRY_ID)` 返回的表单 controller。
  */
-export function makeDirsCard(scope: any) {
+export function makeDirsCard(form: any) {
   return function DirsCard() {
     const [rows, setRows] = useState<{ value: string }[]>([])
     const [open, setOpen] = useState(false)
@@ -399,16 +504,18 @@ export function makeDirsCard(scope: any) {
     useEffect(() => {
       const update = () => {
         try {
-          setRows(currentDirs(scope).map((value) => ({ value })))
+          setRows(currentDirs(form).map((value) => ({ value })))
         } catch {
-          // a stale scope must never break the section render
+          // a stale form must never break the section render
         }
       }
       update()
-      return scope.subscribe(update)
+      return subscribeForm(form, update)
     }, [])
 
-    const saved = currentDirs(scope)
+    const locked = !isWritable(form)
+    const overridden = fieldOverridden(form, 'allowedDirs')
+    const saved = currentDirs(form)
     const pendingCount = dirsDirtyCount(rows, saved)
 
     const setRow = (index: number, value: string) => {
@@ -435,9 +542,23 @@ export function makeDirsCard(scope: any) {
     }
 
     const restoreSaved = () => {
-      setRows(currentDirs(scope).map((value) => ({ value })))
+      setRows(currentDirs(form).map((value) => ({ value })))
       setError(null)
       setInvalid({})
+    }
+
+    /** 清除用户层覆盖，回到组合（部署）默认值。 */
+    const resetDefault = async () => {
+      setError(null)
+      try {
+        setSaving(true)
+        await resetField(form, 'allowedDirs')
+        restoreSaved()
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+      } finally {
+        setSaving(false)
+      }
     }
 
     const save = async () => {
@@ -460,7 +581,7 @@ export function makeDirsCard(scope: any) {
       }
       try {
         setSaving(true)
-        await scope.set('allowedDirs', values)
+        await saveField(form, 'allowedDirs', values)
         restoreSaved()
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause))
@@ -488,7 +609,13 @@ export function makeDirsCard(scope: any) {
         <div className="sabx-field">
           <div className="sabx-field-head">
             <span className="sabx-field-label">工作区外的受信可写目录</span>
-            <button className="sabx-field-reset" type="button" disabled={saving} onClick={restoreSaved}>
+            <button
+              className="sabx-field-reset"
+              type="button"
+              disabled={saving || locked || !overridden}
+              title={overridden ? '清除用户层覆盖，回到部署默认' : '当前未覆盖部署默认'}
+              onClick={() => void resetDefault()}
+            >
               重置为默认
             </button>
           </div>
@@ -511,6 +638,7 @@ export function makeDirsCard(scope: any) {
                     value={row.value}
                     aria-label={`授权目录 ${index + 1}`}
                     placeholder="D:\Shared\Tools"
+                    disabled={locked}
                     onChange={(event) => setRow(index, event.target.value)}
                   />
                   <button
@@ -518,6 +646,7 @@ export function makeDirsCard(scope: any) {
                     type="button"
                     aria-label="删除"
                     title="删除该目录"
+                    disabled={locked}
                     onClick={() => removeRow(index)}
                   >
                     <XIcon />
@@ -526,7 +655,7 @@ export function makeDirsCard(scope: any) {
               ))
             )}
           </div>
-          <button className="sabx-add-row" type="button" disabled={saving} onClick={addRow}>
+          <button className="sabx-add-row" type="button" disabled={saving || locked} onClick={addRow}>
             <span aria-hidden="true">＋</span> 添加目录
           </button>
           <p className="sabx-dir-hint-inline">{DIRS_VALIDATE_HINT}</p>
@@ -538,7 +667,7 @@ export function makeDirsCard(scope: any) {
           <button className="sabx-btn sabx-btn-ghost" type="button" disabled={saving || pendingCount === 0} onClick={restoreSaved}>
             放弃修改
           </button>
-          <button className="sabx-btn sabx-btn-primary" type="button" disabled={saving} onClick={() => void save()}>
+          <button className="sabx-btn sabx-btn-primary" type="button" disabled={saving || locked} onClick={() => void save()}>
             {saving ? '保存中…' : '保存目录'}
           </button>
         </div>
@@ -549,9 +678,9 @@ export function makeDirsCard(scope: any) {
 
 /**
  * 构建「命令规则」卡片（默认动作分段 + 自绘工具下拉规则表 + 添加/删除/保存/放弃）。
- * @param scope - ctx.settingsScope.bind 返回的 controller。
+ * @param form - `ctx.configForms.get(SETTINGS_ENTRY_ID)` 返回的表单 controller。
  */
-export function makeCommandsCard(scope: any) {
+export function makeCommandsCard(form: any) {
   return function CommandsCard() {
     const [rules, setRules] = useState<any[]>([])
     const [defaultAction, setDefaultAction] = useState('delegate')
@@ -565,21 +694,23 @@ export function makeCommandsCard(scope: any) {
     useEffect(() => {
       const update = () => {
         try {
-          const cmds = currentCommands(scope)
+          const cmds = currentCommands(form)
           setRules(cmds.rules)
           setDefaultAction(cmds.default)
           setEscalateAuto(cmds.escalation !== 'never')
           setBaseline(cmds.baseline)
           setSessionCache(cmds.sessionCache)
         } catch {
-          // a stale scope must never break the section render
+          // a stale form must never break the section render
         }
       }
       update()
-      return scope.subscribe(update)
+      return subscribeForm(form, update)
     }, [])
 
-    const saved = currentCommands(scope)
+    const locked = !isWritable(form)
+    const overridden = fieldOverridden(form, 'commands')
+    const saved = currentCommands(form)
     const isDirty =
       defaultAction !== (saved.default || 'delegate') ||
       escalateAuto !== (saved.escalation !== 'never') ||
@@ -604,7 +735,7 @@ export function makeCommandsCard(scope: any) {
     }
 
     const restoreSaved = () => {
-      const cmds = currentCommands(scope)
+      const cmds = currentCommands(form)
       setRules(cmds.rules)
       setDefaultAction(cmds.default || 'delegate')
       setEscalateAuto(cmds.escalation !== 'never')
@@ -613,9 +744,18 @@ export function makeCommandsCard(scope: any) {
       setError(null)
     }
 
-    const resetDefault = () => {
+    /** 清除用户层覆盖，回到组合（部署）默认值。 */
+    const resetDefault = async () => {
       setError(null)
-      setDefaultAction(saved.default || 'delegate')
+      try {
+        setSaving(true)
+        await resetField(form, 'commands')
+        restoreSaved()
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+      } finally {
+        setSaving(false)
+      }
     }
 
     const save = async () => {
@@ -633,7 +773,7 @@ export function makeCommandsCard(scope: any) {
         })
       try {
         setSaving(true)
-        await scope.set('commands', {
+        await saveField(form, 'commands', {
           default: defaultAction,
           escalation: escalateAuto ? 'capability' : 'never',
           baseline,
@@ -663,7 +803,13 @@ export function makeCommandsCard(scope: any) {
         <div className="sabx-field">
           <div className="sabx-field-head">
             <span className="sabx-field-label">未命中任何规则时的默认动作</span>
-            <button className="sabx-field-reset" type="button" disabled={saving} onClick={resetDefault}>
+            <button
+              className="sabx-field-reset"
+              type="button"
+              disabled={saving || locked || !overridden}
+              title={overridden ? '清除用户层覆盖，回到部署默认' : '当前未覆盖部署默认'}
+              onClick={() => void resetDefault()}
+            >
               重置为默认
             </button>
           </div>
@@ -683,7 +829,7 @@ export function makeCommandsCard(scope: any) {
               rules.map((rule, index) => (
                 <div key={index} className="sabx-rule-row">
                   <div className="sabx-rule-tool">
-                    <ToolPicker value={rule.tool} disabled={saving} onSelect={(value) => setRule(index, { tool: value })} />
+                    <ToolPicker value={rule.tool} disabled={saving || locked} onSelect={(value) => setRule(index, { tool: value })} />
                   </div>
                   <div className="sabx-rule-pattern">
                     <input
@@ -693,7 +839,7 @@ export function makeCommandsCard(scope: any) {
                       placeholder="git *"
                       aria-label="命令模式"
                       value={rule.pattern || ''}
-                      disabled={saving}
+                      disabled={saving || locked}
                       onChange={(event) => setRule(index, { pattern: event.target.value })}
                     />
                   </div>
@@ -705,7 +851,7 @@ export function makeCommandsCard(scope: any) {
                     type="button"
                     aria-label="删除规则"
                     title="删除该规则"
-                    disabled={saving}
+                    disabled={saving || locked}
                     onClick={() => removeRule(index)}
                   >
                     <XIcon />
@@ -714,7 +860,7 @@ export function makeCommandsCard(scope: any) {
               ))
             )}
           </div>
-          <button className="sabx-add-row" type="button" disabled={saving} onClick={addRule}>
+          <button className="sabx-add-row" type="button" disabled={saving || locked} onClick={addRule}>
             <span aria-hidden="true">＋</span> 添加规则
           </button>
           <p className="sabx-dir-hint-inline" style={{ marginTop: 4 }}>{COMMANDS_TAIL_HINT}</p>
@@ -728,7 +874,7 @@ export function makeCommandsCard(scope: any) {
             <input
               type="checkbox"
               checked={escalateAuto}
-              disabled={saving}
+              disabled={saving || locked}
               onChange={(event) => setEscalateAuto(event.target.checked)}
             />
             <span>允许沙箱升级自动放行</span>
@@ -744,7 +890,7 @@ export function makeCommandsCard(scope: any) {
                 <input
                   type="checkbox"
                   checked={option.key === 'baseline' ? baseline : sessionCache}
-                  disabled={saving}
+                  disabled={saving || locked}
                   onChange={(event) =>
                     (option.key === 'baseline' ? setBaseline : setSessionCache)(event.target.checked)
                   }
@@ -763,7 +909,7 @@ export function makeCommandsCard(scope: any) {
           <button className="sabx-btn sabx-btn-ghost" type="button" disabled={saving || pendingCount === 0} onClick={restoreSaved}>
             放弃修改
           </button>
-          <button className="sabx-btn sabx-btn-primary" type="button" disabled={saving} onClick={() => void save()}>
+          <button className="sabx-btn sabx-btn-primary" type="button" disabled={saving || locked} onClick={() => void save()}>
             {saving ? '保存中…' : '保存命令规则'}
           </button>
         </div>
@@ -775,18 +921,18 @@ export function makeCommandsCard(scope: any) {
 /**
  * 构建「命令规则」可视化编辑器（与授权目录编辑器并列）。保留原导出名，
  * 返回独立卡片组件。
- * @param scope - ctx.settingsScope.bind 返回的 controller。
+ * @param form - `ctx.configForms.get(SETTINGS_ENTRY_ID)` 返回的表单 controller。
  */
-export function makeCommandRulesEditor(scope: any) {
-  return makeCommandsCard(scope)
+export function makeCommandRulesEditor(form: any) {
+  return makeCommandsCard(form)
 }
 
 /**
  * 构建「禁读规则」卡片（pattern 输入 + 紧凑 deny/ask 分段 + 删除/添加/保存/放弃）。
  * 动作刻意只有 deny / ask：官方默认本就允许读，allow 与默认行为无异，故不提供。
- * @param scope - ctx.settingsScope.bind 返回的 controller。
+ * @param form - `ctx.configForms.get(SETTINGS_ENTRY_ID)` 返回的表单 controller。
  */
-export function makeNoReadCard(scope: any) {
+export function makeNoReadCard(form: any) {
   return function NoReadCard() {
     const [rules, setRules] = useState<any[]>([])
     const [open, setOpen] = useState(false)
@@ -796,16 +942,18 @@ export function makeNoReadCard(scope: any) {
     useEffect(() => {
       const update = () => {
         try {
-          setRules(currentNoRead(scope))
+          setRules(currentNoRead(form))
         } catch {
-          // a stale scope must never break the section render
+          // a stale form must never break the section render
         }
       }
       update()
-      return scope.subscribe(update)
+      return subscribeForm(form, update)
     }, [])
 
-    const saved = currentNoRead(scope)
+    const locked = !isWritable(form)
+    const overridden = fieldOverridden(form, 'noRead')
+    const saved = currentNoRead(form)
     const pendingCount = noReadDirty(rules, saved) ? 1 : 0
 
     const setRule = (index: number, patch: Partial<any>) => {
@@ -824,8 +972,22 @@ export function makeNoReadCard(scope: any) {
     }
 
     const restoreSaved = () => {
-      setRules(currentNoRead(scope))
+      setRules(currentNoRead(form))
       setError(null)
+    }
+
+    /** 清除用户层覆盖，回到组合（部署）默认值。 */
+    const resetDefault = async () => {
+      setError(null)
+      try {
+        setSaving(true)
+        await resetField(form, 'noRead')
+        restoreSaved()
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+      } finally {
+        setSaving(false)
+      }
     }
 
     const save = async () => {
@@ -839,7 +1001,7 @@ export function makeNoReadCard(scope: any) {
         }))
       try {
         setSaving(true)
-        await scope.set('noRead', cleanRules)
+        await saveField(form, 'noRead', cleanRules)
         restoreSaved()
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause))
@@ -863,6 +1025,15 @@ export function makeNoReadCard(scope: any) {
         <div className="sabx-field">
           <div className="sabx-field-head">
             <span className="sabx-field-label">限制读取的文件模式（命中即按动作处理）</span>
+            <button
+              className="sabx-field-reset"
+              type="button"
+              disabled={saving || locked || !overridden}
+              title={overridden ? '清除用户层覆盖，回到部署默认' : '当前未覆盖部署默认'}
+              onClick={() => void resetDefault()}
+            >
+              重置为默认
+            </button>
           </div>
           <p className="sabx-field-hint" dangerouslySetInnerHTML={{ __html: NOREAD_HINT }} />
           <div className="sabx-rules-table">
@@ -879,7 +1050,7 @@ export function makeNoReadCard(scope: any) {
                       placeholder="*.pem"
                       aria-label="禁读模式"
                       value={rule.pattern}
-                      disabled={saving}
+                      disabled={saving || locked}
                       onChange={(event) => setRule(index, { pattern: event.target.value })}
                     />
                   </div>
@@ -891,7 +1062,7 @@ export function makeNoReadCard(scope: any) {
                     type="button"
                     aria-label="删除规则"
                     title="删除该规则"
-                    disabled={saving}
+                    disabled={saving || locked}
                     onClick={() => removeRule(index)}
                   >
                     <XIcon />
@@ -900,7 +1071,7 @@ export function makeNoReadCard(scope: any) {
               ))
             )}
           </div>
-          <button className="sabx-add-row" type="button" disabled={saving} onClick={addRule}>
+          <button className="sabx-add-row" type="button" disabled={saving || locked} onClick={addRule}>
             <span aria-hidden="true">＋</span> 添加规则
           </button>
           <p className="sabx-dir-hint-inline" style={{ marginTop: 4 }}>{NOREAD_TAIL_HINT}</p>
@@ -913,7 +1084,7 @@ export function makeNoReadCard(scope: any) {
           <button className="sabx-btn sabx-btn-ghost" type="button" disabled={saving || pendingCount === 0} onClick={restoreSaved}>
             放弃修改
           </button>
-          <button className="sabx-btn sabx-btn-primary" type="button" disabled={saving} onClick={() => void save()}>
+          <button className="sabx-btn sabx-btn-primary" type="button" disabled={saving || locked} onClick={() => void save()}>
             {saving ? '保存中…' : '保存禁读规则'}
           </button>
         </div>
@@ -923,22 +1094,26 @@ export function makeNoReadCard(scope: any) {
 }
 
 /**
- * 构建「沙箱授权」分节组件（闭包式，直接订阅 scope）。
+ * 构建「沙箱授权」分节组件（闭包式，直接订阅配置表单 controller）。
  * 包含「授权目录」「命令规则」「禁读规则」三张可折叠卡片，视觉对齐
  * docs/config-ui-prototype.html v5。
- * @param scope - ctx.settingsScope.bind 返回的 controller。
+ * @param form - `ctx.configForms.get(SETTINGS_ENTRY_ID)` 返回的表单 controller（可为 null）。
  */
-export function makeAllowlistSection(scope: any) {
-  const DirsCard = makeDirsCard(scope)
-  const CommandsCard = makeCommandsCard(scope)
-  const NoReadCard = makeNoReadCard(scope)
+export function makeAllowlistSection(form: any) {
+  const DirsCard = makeDirsCard(form)
+  const CommandsCard = makeCommandsCard(form)
+  const NoReadCard = makeNoReadCard(form)
   return function AllowlistSection() {
+    const reason = readOnlyReason(form)
     return (
       <section className="sabx-section" aria-labelledby="sabx-section-title">
         <h2 className="sabx-section-heading" id="sabx-section-title">沙箱授权</h2>
         <p className="sabx-section-intro">
           配置沙箱内的目录操作、命令执行与文件读取限制，保存后立即生效。
         </p>
+        {reason !== null ? (
+          <div className="sabx-callout-note" role="status">{reason}</div>
+        ) : null}
         <DirsCard />
         <CommandsCard />
         <NoReadCard />
@@ -948,22 +1123,18 @@ export function makeAllowlistSection(scope: any) {
 }
 
 /**
- * 客户端插件入口：注册设置页分节并绑定设置 namespace。
+ * 客户端插件入口：注册设置页分节并取本插件条目的配置表单。
  * 注册写法与官方设置分节一致（ctx.slots.inject + register）。
  */
 export function apply(ctx: any) {
-  let scope
+  let form: any = null
   try {
-    scope = ctx.settingsScope.bind({ namespace: SETTINGS_NAMESPACE })
+    form = ctx.configForms.get(SETTINGS_ENTRY_ID)
   } catch {
-    // bind 失败（如设置服务缺失）不能阻止分节注册 —— 组件退化为空列表编辑。
-    scope = {
-      getSnapshot: () => ({ value: {} }),
-      subscribe: () => () => {},
-      set: () => Promise.reject(new Error('settings scope unavailable')),
-    }
+    // 表单不可用（服务缺失 / 条目未挂载）不能阻止分节注册 —— 组件退化为只读空列表。
+    form = null
   }
-  const section = makeAllowlistSection(scope)
+  const section = makeAllowlistSection(form)
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'sandbox-allowlist',

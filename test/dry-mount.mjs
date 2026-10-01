@@ -31,47 +31,46 @@ const mktemp = (prefix) => {
 }
 const WORKSPACE = process.env.DSH_TEST_WORKSPACE ?? mktemp('dsh-drymount-ws-')
 const TRUSTED = process.env.DSH_TEST_TRUSTED ?? mktemp('dsh-drymount-trust-')
-const OUTSIDE = `${TRUSTED}-other\\x.txt`
+
+// The "outside" fixture must live outside the OS temp area: the stock fence
+// treats it as writable in workspace-write mode (`writableRoots` = workspace ∪
+// /tmp ∪ tmpdir()), so a temp-path fixture would never be denied and the
+// assertion below would be vacuous. The fence realpaths the target, so the
+// `..` here resolves NEXT TO the temp root — still a throwaway directory, but
+// one the fence really has to refuse.
+const OUTSIDE_DIR = process.env.DSH_TEST_OUTSIDE ?? join(tmpdir(), '..', `dsh-drymount-outside-${process.pid}`)
+const OUTSIDE = join(OUTSIDE_DIR, 'x.txt')
+created.push(OUTSIDE_DIR)
 
 // Isolate the grants manifest (policy writes it next to the settings
 // document) so a test workspace never pollutes the real DSH home.
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-drymount-home-'))
 
-// The fixture directory the pattern expands to; create it when missing so
-// the dry-mount is self-contained on a fresh machine.
+// The fixture directories the patterns/denials address; create them when
+// missing so the dry-mount is self-contained on a fresh machine.
 if (!existsSync(TRUSTED)) {
   mkdirSync(TRUSTED, { recursive: true })
 }
+mkdirSync(OUTSIDE_DIR, { recursive: true })
 
 const ctx = new Context()
-// dsh 0.1.5: SandboxPolicyService declares `static inject = ['sessionProjections']`
+// dsh 0.2.0: SandboxPolicyService declares `static inject = ['sessionProjections']`
 // and registers the `sandboxMode` projection from its constructor, so a bare
 // cordis context must provide the service (production provides it through the
 // base bundle's session-projection row).
 ctx.provide('sessionProjections', { register() {}, stateOf: () => undefined })
 // The policy's model-facing context needs a systemPrompt service; a stub is
 // enough to activate the registration (the real deployment provides the real
-// one).
-ctx.provide('systemPrompt', { context() {} })
-// A minimal settings-service stub exercising the `sandbox-allowlist` namespace
-// path: the policy reads its patterns through the registered scope.
-const settingsSection = { allowedDirs: [`${TRUSTED}\\**`] }
-ctx.provide('settings', {
-  register(_ns, _schema, _options) {
-    return {
-      get: () => settingsSection,
-      watch: () => () => {},
-      update: async () => {},
-      replace: async () => {},
-    }
-  },
-})
+// one). `context()` returns the disposer the policy registers as an effect.
+ctx.provide('systemPrompt', { context() { return () => {} } })
 
 const policyFiber = ctx.plugin(PolicyPlugin, {
   mode: 'workspace-write',
   workspaceRoot: WORKSPACE,
-  // no allowedDirs in the composition config — the settings
-  // namespace (settingsSection stub) supplies the list
+  // dsh 0.2.0: the rules live in this row's Config — the settings form is a
+  // projection of it, and saving the form re-applies the plugin with the
+  // merged config. No settings service is involved in reading them.
+  allowedDirs: [`${TRUSTED}\\**`],
 })
 await policyFiber
 
