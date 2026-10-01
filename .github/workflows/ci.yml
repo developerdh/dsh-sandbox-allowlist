@@ -1,0 +1,47 @@
+# CI：PR 进入 main 前跑 typecheck + 全量测试，与发布流水线同一套口径。
+#
+# 仅在 PR 上触发（main 的分支保护规则把 "CI / Test" 设为必需状态检查）；
+# main 上的直接推送与 v* tag 发布不在此重复跑（发布由 release.yml 承担）。
+# workflow_dispatch 支持在 Actions 页手动跑。
+name: CI
+
+on:
+  pull_request:
+    branches: ['main']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: windows-latest # 与发布流水线同平台，顺带覆盖 win32 ACL 代码路径
+    defaults:
+      run:
+        shell: bash # 测试脚本是 bash 语法；Windows runner 默认是 PowerShell
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4 # 版本取自 package.json 的 packageManager 字段
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: |
+          npm test
+          npm run test:command-gate
+          npm run test:approval-gate
+          npm run test:matrix
+          npm run test:read-gate
+          npm run test:client
+          npm run test:dry-mount
