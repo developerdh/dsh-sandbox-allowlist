@@ -87,10 +87,15 @@ jobs:
           # Release 正文 = 附注 tag 上的版本说明（打 annotated tag 可带说明）+ 更新内容 + 安装方式。
           # 「更新内容」只在存在上一个 tag 时生成：首个 tag 没有可比基线，
           # git log <tag> 会把仓库全部历史当更新内容列出来（失真），宁可省略。
+          # actions/checkout 检出 tag 时会把 ref 重取为指向 commit 的轻量 tag（+<sha>:refs/tags/<tag>），
+          # %(contents) 会因此回退成 commit message；读附注前先把远端 annotated tag 对象强制取回。
+          git fetch --force --no-tags origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
           TAG_MSG=$(git tag -l --format='%(contents)' "${GITHUB_REF_NAME}")
           PREV=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
           CHANGES=""
-          [ -n "$PREV" ] && CHANGES=$(git log --format='- %s' "${PREV}..${GITHUB_REF_NAME}")
+          # 更新内容过滤 ci/docs/test/chore 前缀：仓库基建类提交对插件用户是噪音；
+          # 全部被滤空时省略该节（grep 无命中退出码非零，|| true 兜底 set -e）。
+          [ -n "$PREV" ] && CHANGES=$(git log --format='- %s' "${PREV}..${GITHUB_REF_NAME}" | grep -Ev '^- (ci|docs|test|chore)[:(]' || true)
           VER="${GITHUB_REF_NAME#v}"
           BODY="${TAG_MSG}"
           if [ -n "$CHANGES" ]; then
