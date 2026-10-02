@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: write # gh release create 需要写 Release
+  id-token: write # npm publish --provenance 需要 OIDC 令牌
 
 jobs:
   release:
@@ -46,6 +47,9 @@ jobs:
         run: pnpm typecheck
 
       - name: Test
+        env: # runner 默认 TEMP 是 8.3 短路径（RUNNER~1），会让 realpath 规范化后的路径与原始字符串不相等；runner.temp 是长路径
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: |
           npm test
           npm run test:command-gate
