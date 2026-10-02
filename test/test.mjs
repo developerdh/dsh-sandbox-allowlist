@@ -12,7 +12,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -259,7 +259,9 @@ assert.match(denyReason('bash', 'rm -rf /'), /deny rule/)
   }
 
   // ── filesystem expansion ───────────────────────────────────────────────────
-const base = mkdtempSync(join(tmpdir(), 'dsh-allowlist-test-'))
+// Windows 上 TEMP 可能是 8.3 短路径（如 CI runner 的 RUNNER~1），而
+// expandTrustedRoots 返回 realpath 规范化路径，夹具必须用同一形态做相等断言
+const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'dsh-allowlist-test-')))
 try {
   const shared = join(base, 'Shared')
   const sharedA = join(shared, 'a')
