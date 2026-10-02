@@ -24,6 +24,12 @@ import FsPlugin from '../lib/fs.mjs'
 // committed or required; point DSH_TEST_WORKSPACE / DSH_TEST_TRUSTED at real
 // directories to probe an actual deployment layout.
 const created = []
+// 兜底回收：断言中断时尾部清理不会执行，退出钩子重放同一套 best-effort 清理
+//（fiber 随进程消亡；文件与目录是主要残留物）。
+process.on('exit', () => {
+  try { rmSync(process.env.DSH_HOME, { recursive: true, force: true }) } catch { /* best effort */ }
+  for (const dir of created) { try { rmSync(dir, { recursive: true, force: true }) } catch { /* best effort */ } }
+})
 const mktemp = (prefix) => {
   const dir = mkdtempSync(join(tmpdir(), prefix))
   created.push(dir)
@@ -130,3 +136,4 @@ await fsFiber.dispose()
 try { rmSync(process.env.DSH_HOME, { recursive: true, force: true }) } catch { /* best effort */ }
 for (const dir of created) { try { rmSync(dir, { recursive: true, force: true }) } catch { /* best effort */ } }
 console.log('dry-mount: all checks passed')
+

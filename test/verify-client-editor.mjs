@@ -73,7 +73,9 @@ assert.ok(captured, 'exports captured')
 // `locale` (dsh-client-locale) carries the dictionaries, `configForms` is the
 // 0.2.0 settings source — both are guaranteed on the target host family. A
 // host-optional service here would leave the entry pending and fail web boot.
-assert.deepEqual(captured.inject, ['slots', 'connection', 'configForms', 'locale'], 'inject list intact')
+// `connection` is deliberately absent: the section never consumes it, and a
+// declared-but-unused service needlessly tightens host compatibility.
+assert.deepEqual(captured.inject, ['slots', 'configForms', 'locale'], 'inject list intact')
 assert.equal(typeof captured.apply, 'function', 'apply exported')
 
 // Call apply() with a stubbed cordis ctx (slots + configForms) like the real

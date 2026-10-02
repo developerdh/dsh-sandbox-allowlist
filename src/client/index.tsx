@@ -42,12 +42,13 @@
  * 系统向组件注入 props 的转换契约，任何情况下都不会因 props 缺失而崩溃。
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { en, NS, zh } from './locales'
 
 // 客户端依赖注入声明（服务名，与 lib/client.js 的 exports.inject 一致）。
 // `locale` 是宿主自带的词典服务：注册 zh/en 后由宿主按当前语言解析键。
-export const inject = ['slots', 'connection', 'configForms', 'locale']
+// 不声明 `connection`：本分节不消费连接服务，多声明会无谓收紧宿主兼容面。
+export const inject = ['slots', 'configForms', 'locale']
 
 /**
  * 本插件在 profile 中的 Loader 条目 id（cordis.patch.yml 的
@@ -55,6 +56,12 @@ export const inject = ['slots', 'connection', 'configForms', 'locale']
  * 表单 schema 由该行的 `static Config` 投影而来。
  */
 export const SETTINGS_ENTRY_ID = 'sandbox-allowlist-policy'
+
+/** 插件面板（Plugins 页）注册键：bundle.config 按包名，row.config 按「包名#行id」。 */
+const BUNDLE_CONFIG_KEY = 'dsh-sandbox-allowlist'
+const ROW_CONFIG_KEY = 'dsh-sandbox-allowlist#sandbox-allowlist-policy'
+const PROVIDER_ROW_ID = 'sandbox-allowlist-provider'
+const PROVIDER_ROW_CONFIG_KEY = 'dsh-sandbox-allowlist#sandbox-allowlist-provider'
 
 /** 翻译函数签名（`ctx.locale.bind(NS)` 的返回值）。 */
 type Translate = (key: string, params?: Record<string, string | number>) => string
@@ -73,7 +80,7 @@ const NOREAD_HINT_KEY = 'noread.hint'
 const NOREAD_TAIL_HINT_KEY = 'noread.tailHint'
 
 /** 工具选项（空 = 任意工具；方案 A：标签与值一致）。 */
-const TOOL_OPTIONS = [
+const TOOL_OPTIONS: { value: string; label?: string; labelKey?: string }[] = [
   { value: '', labelKey: 'common.any' },
   { value: 'bash', label: 'bash' },
   { value: 'pwsh', label: 'pwsh' },
@@ -108,7 +115,7 @@ function actionOptions(t: Translate, includeDelegate?: boolean) {
 function toolOptions(t: Translate) {
   return TOOL_OPTIONS.map((option) => ({
     ...option,
-    label: Object.prototype.hasOwnProperty.call(option, 'labelKey') ? t((option as any).labelKey) : (option as any).label,
+    label: option.labelKey !== undefined ? t(option.labelKey) : option.label ?? option.value,
   }))
 }
 
@@ -120,11 +127,42 @@ function baselineOptions(t: Translate) {
 /** 表单快照的客户端视图（结构对齐官方 `ConfigFormSnapshot`）。 */
 export type FormSnapshotView = {
   status: 'loading' | 'ready' | 'unavailable'
+  // 官方快照的 value/user 由服务端 schema 投影而来，形状随配置字段演进，
+  // 客户端不重建静态类型（重建即多一处漂移点）；所有消费点都做运行时收窄。
   value: any
   user: any
   revision: number | undefined
   writable: boolean
   mode: 'host' | 'memory'
+}
+
+/**
+ * 配置表单 controller 的最小结构（官方 ConfigForm controller 的子集，
+ * 全部可选：任何缺失都按「表单不可用」降级，绝不抛错）。快照字段保持
+ * unknown：形状由服务端 schema 决定，消费点逐一收窄。
+ */
+export type FormController = {
+  getSnapshot?: () => Record<string, unknown> | null | undefined
+  subscribe?: (listener: () => void) => (() => void) | undefined
+  set?: (field: string, value: unknown) => Promise<boolean>
+  unset?: (field: string) => Promise<boolean>
+}
+
+/**
+ * 客户端插件入口收到的宿主上下文的最小结构（apply 只用这些成员；
+ * 用结构类型替代 `any`，调用点的存在性仍逐一防御）。
+ */
+export type ClientContext = {
+  effect: (factory: () => unknown, name?: string) => unknown
+  slots: {
+    inject: (name: string, register: () => unknown) => unknown
+    register: (definition: Record<string, unknown>, component: unknown) => unknown
+  }
+  configForms: { get: (entryId: string) => FormController | null }
+  locale: {
+    register: (ns: string, dictionaries: Record<string, Record<string, string>>) => unknown
+    bind: (ns: string) => Translate
+  }
 }
 
 /**
@@ -144,17 +182,18 @@ export const UNAVAILABLE_SNAPSHOT: FormSnapshotView = {
  * 设置页永远不能因表单服务不可用而崩溃。
  * @param form - `ctx.configForms.get(entryId)` 返回的 controller（可为 null）。
  */
-export function formSnapshot(form: any): FormSnapshotView {
+export function formSnapshot(form: FormController | null): FormSnapshotView {
   try {
     if (!form || typeof form.getSnapshot !== 'function') return UNAVAILABLE_SNAPSHOT
     const snapshot = form.getSnapshot()
     if (!snapshot || typeof snapshot !== 'object') return UNAVAILABLE_SNAPSHOT
-    const status = snapshot.status === 'ready' || snapshot.status === 'loading' ? snapshot.status : 'unavailable'
+    const rawStatus = snapshot.status
+    const status = rawStatus === 'ready' || rawStatus === 'loading' ? rawStatus : 'unavailable'
     return {
       status,
       value: snapshot.value,
       user: snapshot.user,
-      revision: snapshot.revision,
+      revision: typeof snapshot.revision === 'number' ? snapshot.revision : undefined,
       writable: snapshot.writable === true,
       mode: snapshot.mode === 'host' ? 'host' : 'memory',
     }
@@ -164,7 +203,7 @@ export function formSnapshot(form: any): FormSnapshotView {
 }
 
 /** 订阅快照替换；表单不可用时返回空 disposer（不抛、不崩）。 */
-export function subscribeForm(form: any, listener: () => void): () => void {
+export function subscribeForm(form: FormController | null, listener: () => void): () => void {
   try {
     if (form && typeof form.subscribe === 'function') {
       const dispose = form.subscribe(listener)
@@ -180,7 +219,7 @@ export function subscribeForm(form: any, listener: () => void): () => void {
  * 表单当前是否可写。官方契约：memory 模式（远端连接的偏好进程本地）永不
  * 接受写入，`status !== 'ready'` 时也没有可用的原生通路。
  */
-export function isWritable(form: any): boolean {
+export function isWritable(form: FormController | null): boolean {
   const snapshot = formSnapshot(form)
   return snapshot.status === 'ready' && snapshot.writable === true
 }
@@ -188,7 +227,7 @@ export function isWritable(form: any): boolean {
 /**
  * 只读原因（词典键翻译后的文案，供页面说明），可写时为 null。
  */
-export function readOnlyReason(form: any, t: Translate): string | null {
+export function readOnlyReason(form: FormController | null, t: Translate): string | null {
   const snapshot = formSnapshot(form)
   if (snapshot.status === 'loading') return t('readonly.loading')
   if (snapshot.status === 'unavailable') {
@@ -204,7 +243,7 @@ export function readOnlyReason(form: any, t: Translate): string | null {
  * 该字段是否被用户层覆盖。官方语义：快照 `user` 里**键在场**即覆盖——即使值
  * 恰好等于组合默认值也仍是覆盖，比较值看不出来。
  */
-export function fieldOverridden(form: any, field: string): boolean {
+export function fieldOverridden(form: FormController | null, field: string): boolean {
   const user = formSnapshot(form).user
   return user !== null && typeof user === 'object' && Object.prototype.hasOwnProperty.call(user, field)
 }
@@ -213,38 +252,38 @@ export function fieldOverridden(form: any, field: string): boolean {
  * 原子写回一个字段。`set` 返回 `false` 表示被拒（revision 冲突 / 不可写），
  * 必须当作失败处理；传输层异常则直接抛出。
  */
-export async function saveField(form: any, field: string, value: any, t: Translate): Promise<void> {
+export async function saveField(form: FormController | null, field: string, value: any, t: Translate): Promise<void> {
   if (!isWritable(form)) throw new Error(readOnlyReason(form, t) ?? t('error.notWritable'))
-  const accepted = await form.set(field, value)
+  const accepted = await form?.set?.(field, value)
   if (accepted !== true) {
     throw new Error(t('error.saveRejected'))
   }
 }
 
 /** 清除用户层覆盖，让字段回退到组合默认值（「重置为默认」）。 */
-export async function resetField(form: any, field: string, t: Translate): Promise<void> {
+export async function resetField(form: FormController | null, field: string, t: Translate): Promise<void> {
   if (!isWritable(form)) throw new Error(readOnlyReason(form, t) ?? t('error.notWritable'))
-  const accepted = await form.unset(field)
+  const accepted = await form?.unset?.(field)
   if (accepted !== true) {
     throw new Error(t('error.resetRejected'))
   }
 }
 
 /** 从表单快照读取当前授权目录列表。 */
-export function currentDirs(form: any): string[] {
+export function currentDirs(form: FormController | null): string[] {
   const value = formSnapshot(form).value
   return Array.isArray(value && value.allowedDirs) ? value.allowedDirs : []
 }
 
 /** 从表单快照读取当前命令规则与开关。 */
-export function currentCommands(form: any): {
+export function currentCommands(form: FormController | null): {
   default: string
-  rules: any[]
+  rules: SavedCommandRule[]
   escalation: string
   baseline: boolean
   sessionCache: boolean
 } {
-  const fallback = { default: 'delegate', rules: [], escalation: 'capability', baseline: true, sessionCache: true }
+  const fallback = { default: 'delegate', rules: [] as SavedCommandRule[], escalation: 'capability', baseline: true, sessionCache: true }
   const value = formSnapshot(form).value
   const commands = value && value.commands
   if (!commands) return fallback
@@ -265,7 +304,7 @@ export function currentCommands(form: any): {
 }
 
 /** 从表单快照读取当前禁读规则（[{ pattern, action }]，动作归一为 deny/ask）。 */
-export function currentNoRead(form: any): any[] {
+export function currentNoRead(form: FormController | null): SavedNoReadRule[] {
   const value = formSnapshot(form).value
   const rules = Array.isArray(value && value.noRead) ? value.noRead : []
   return rules.map((rule: any) => ({
@@ -296,6 +335,18 @@ export function validateDirPattern(raw: string): { key: string; params?: Record<
   return null
 }
 
+/** 已保存的一条命令规则（快照形状，无客户端行标识）。 */
+export type SavedCommandRule = { tool: string; pattern: string; action: string }
+
+/** 已保存的一条禁读规则（快照形状）。 */
+export type SavedNoReadRule = { pattern: string; action: string }
+
+/** 规则表一行的草稿：`id` 是客户端生成的行标识（React key 用），绝不写回快照。 */
+export type CommandRuleRow = SavedCommandRule & { id: number }
+
+/** 禁读规则表一行的草稿。 */
+export type NoReadRuleRow = SavedNoReadRule & { id: number }
+
 /** 未保存改动计数：与已保存值逐条位置比较。 */
 function dirsDirtyCount(rows: { value: string }[], saved: string[]): number {
   let count = 0
@@ -307,7 +358,7 @@ function dirsDirtyCount(rows: { value: string }[], saved: string[]): number {
 }
 
 /** 命令规则草稿与已保存值是否不同。 */
-function rulesDirty(rules: any[], saved: any[]): boolean {
+function rulesDirty(rules: CommandRuleRow[], saved: SavedCommandRule[]): boolean {
   if (rules.length !== saved.length) return true
   for (let i = 0; i < rules.length; i += 1) {
     const a = rules[i]
@@ -320,7 +371,7 @@ function rulesDirty(rules: any[], saved: any[]): boolean {
 }
 
 /** 禁读规则草稿与已保存值是否不同（无 tool 维度）。 */
-function noReadDirty(rules: any[], saved: any[]): boolean {
+function noReadDirty(rules: NoReadRuleRow[], saved: SavedNoReadRule[]): boolean {
   if (rules.length !== saved.length) return true
   for (let i = 0; i < rules.length; i += 1) {
     const a = rules[i]
@@ -329,6 +380,15 @@ function noReadDirty(rules: any[], saved: any[]): boolean {
     if ((a.action || 'deny') !== (b.action || 'deny')) return true
   }
   return false
+}
+
+/**
+ * 纯文本提示的 HTML 转义（与 lib/client.js 中 dirs.hint 的内联转义一致）：
+ * 词典里刻意携带标记的键（dirs.warn / cmds.hint / noread.hint）直接以 HTML
+ * 注入，纯文本键必须先转义，两处产物的渲染行为才不会分叉。
+ */
+function escapeHtml(text: string): string {
+  return text.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;')
 }
 
 /** 小 ✕ 图标（删除按钮）。 */
@@ -356,7 +416,7 @@ export function Seg(props: {
           type="button"
           className={['sabx-seg-item', option.cls || (option.value !== 'delegate' ? `is-${option.value}` : '')].join(' ')}
           data-active={option.value === props.selected ? 'true' : 'false'}
-          aria-label={props.ariaLabel ? `${props.ariaLabel}：${option.value}` : undefined}
+          aria-label={props.ariaLabel ? `${props.ariaLabel}: ${option.value}` : undefined}
           title={option.hint}
           onClick={() => props.onSelect(option.value)}
         >
@@ -465,7 +525,7 @@ function Card(props: {
   open: boolean
   onToggle: () => void
   t: Translate
-  children?: any
+  children?: ReactNode
 }) {
   const classes = ['sabx-card-openable']
   if (props.open) classes.push('is-open')
@@ -488,11 +548,11 @@ function Card(props: {
   )
 }
 
-/** 重置按钮的 title 与标签（三张卡片同款）。 */
+/** 重置按钮的 title 与标签（三张卡片同款；标签用通用的 common.reset 键）。 */
 function resetButtonProps(overridden: boolean, t: Translate) {
   return {
     title: overridden ? t('common.resetOverrideTitle') : t('common.resetNotOverrideTitle'),
-    label: t('dirs.reset'),
+    label: t('common.reset'),
   }
 }
 
@@ -501,18 +561,25 @@ function resetButtonProps(overridden: boolean, t: Translate) {
  * @param form - `ctx.configForms.get(SETTINGS_ENTRY_ID)` 返回的表单 controller。
  * @param t - 词典翻译函数（`ctx.locale.bind(NS)`）。
  */
-export function makeDirsCard(form: any, t: Translate) {
+export function makeDirsCard(form: FormController | null, t: Translate) {
   return function DirsCard() {
-    const [rows, setRows] = useState<{ value: string }[]>([])
+    const [rows, setRows] = useState<{ id: number; value: string }[]>([])
     const [open, setOpen] = useState(false)
     const [saving, setSaving] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [invalid, setInvalid] = useState<Record<number, boolean>>({})
+    // 行标识发生器：key 用稳定 id 而非数组下标，删除行后焦点/临时 UI 状态
+    // 不会落到平移后的相邻行上。
+    const nextId = useRef(1)
+    // 草稿保护：存在未保存编辑时，外部快照更新（如另一客户端保存）不再
+    // 静默覆盖本地草稿；「放弃修改」或保存成功后复位，外部变更才重新落地。
+    const dirtyRef = useRef(false)
 
     useEffect(() => {
       const update = () => {
         try {
-          setRows(currentDirs(form).map((value) => ({ value })))
+          if (dirtyRef.current) return // 有未保存草稿，不覆盖
+          setRows(currentDirs(form).map((value) => ({ id: nextId.current++, value })))
         } catch {
           // a stale form must never break the section render
         }
@@ -529,6 +596,7 @@ export function makeDirsCard(form: any, t: Translate) {
 
     const setRow = (index: number, value: string) => {
       setError(null)
+      dirtyRef.current = true
       setInvalid((previous) => {
         if (!Object.prototype.hasOwnProperty.call(previous, index)) return previous
         const next: Record<number, boolean> = {}
@@ -542,18 +610,31 @@ export function makeDirsCard(form: any, t: Translate) {
 
     const addRow = () => {
       setError(null)
-      setRows((previous) => [...previous, { value: '' }])
+      dirtyRef.current = true
+      setRows((previous) => [...previous, { id: nextId.current++, value: '' }])
     }
 
     const removeRow = (index: number) => {
       setError(null)
+      dirtyRef.current = true
+      // 删除行后其上方的非法标记索引整体前移一位，标红不跟错行。
+      setInvalid((previous) => {
+        const next: Record<number, boolean> = {}
+        for (const key of Object.keys(previous)) {
+          const i = Number(key)
+          if (i === index) continue
+          next[i > index ? i - 1 : i] = previous[i]
+        }
+        return next
+      })
       setRows((previous) => previous.filter((_, i) => i !== index))
     }
 
     const restoreSaved = () => {
-      setRows(currentDirs(form).map((value) => ({ value })))
+      setRows(currentDirs(form).map((value) => ({ id: nextId.current++, value })))
       setError(null)
       setInvalid({})
+      dirtyRef.current = false
     }
 
     /** 清除用户层覆盖，回到组合（部署）默认值。 */
@@ -631,13 +712,13 @@ export function makeDirsCard(form: any, t: Translate) {
               {resetProps.label}
             </button>
           </div>
-          <p className="sabx-field-hint" dangerouslySetInnerHTML={{ __html: t(DIRS_HINT_KEY) }} />
+          <p className="sabx-field-hint" dangerouslySetInnerHTML={{ __html: escapeHtml(t(DIRS_HINT_KEY)) }} />
           <div className="sabx-dir-list">
             {rows.length === 0 ? (
               <div className="sabx-empty">{t('dirs.empty')}</div>
             ) : (
               rows.map((row, index) => (
-                <div key={index} className="sabx-dir-row">
+                <div key={row.id} className="sabx-dir-row">
                   {index >= saved.length ? (
                     <span className="sabx-dir-icon is-new" aria-hidden="true">＋</span>
                   ) : (
@@ -693,9 +774,9 @@ export function makeDirsCard(form: any, t: Translate) {
  * @param form - `ctx.configForms.get(SETTINGS_ENTRY_ID)` 返回的表单 controller。
  * @param t - 词典翻译函数（`ctx.locale.bind(NS)`）。
  */
-export function makeCommandsCard(form: any, t: Translate) {
+export function makeCommandsCard(form: FormController | null, t: Translate) {
   return function CommandsCard() {
-    const [rules, setRules] = useState<any[]>([])
+    const [rules, setRules] = useState<CommandRuleRow[]>([])
     const [defaultAction, setDefaultAction] = useState('delegate')
     const [escalateAuto, setEscalateAuto] = useState(true)
     const [baseline, setBaseline] = useState(true)
@@ -703,12 +784,16 @@ export function makeCommandsCard(form: any, t: Translate) {
     const [open, setOpen] = useState(false)
     const [saving, setSaving] = useState(false)
     const [error, setError] = useState<string | null>(null)
+    // 行标识发生器与草稿保护标记（语义同授权目录卡片）。
+    const nextId = useRef(1)
+    const dirtyRef = useRef(false)
 
     useEffect(() => {
       const update = () => {
         try {
+          if (dirtyRef.current) return // 有未保存草稿，不覆盖
           const cmds = currentCommands(form)
-          setRules(cmds.rules)
+          setRules(cmds.rules.map((rule) => ({ ...rule, id: nextId.current++ })))
           setDefaultAction(cmds.default)
           setEscalateAuto(cmds.escalation !== 'never')
           setBaseline(cmds.baseline)
@@ -735,29 +820,33 @@ export function makeCommandsCard(form: any, t: Translate) {
     const actionOpts = actionOptions(t)
     const defaultOpts = actionOptions(t, true)
 
-    const setRule = (index: number, patch: Partial<any>) => {
+    const setRule = (index: number, patch: Partial<CommandRuleRow>) => {
       setError(null)
+      dirtyRef.current = true
       setRules((previous) => previous.map((rule, i) => (i === index ? { ...rule, ...patch } : rule)))
     }
 
     const addRule = () => {
       setError(null)
-      setRules((previous) => [...previous, { tool: '', pattern: '', action: 'ask' }])
+      dirtyRef.current = true
+      setRules((previous) => [...previous, { id: nextId.current++, tool: '', pattern: '', action: 'ask' }])
     }
 
     const removeRule = (index: number) => {
       setError(null)
+      dirtyRef.current = true
       setRules((previous) => previous.filter((_, i) => i !== index))
     }
 
     const restoreSaved = () => {
       const cmds = currentCommands(form)
-      setRules(cmds.rules)
+      setRules(cmds.rules.map((rule) => ({ ...rule, id: nextId.current++ })))
       setDefaultAction(cmds.default || 'delegate')
       setEscalateAuto(cmds.escalation !== 'never')
       setBaseline(cmds.baseline)
       setSessionCache(cmds.sessionCache)
       setError(null)
+      dirtyRef.current = false
     }
 
     /** 清除用户层覆盖，回到组合（部署）默认值。 */
@@ -845,7 +934,7 @@ export function makeCommandsCard(form: any, t: Translate) {
               <div className="sabx-empty">{t('cmds.empty')}</div>
             ) : (
               rules.map((rule, index) => (
-                <div key={index} className="sabx-rule-row">
+                <div key={rule.id} className="sabx-rule-row">
                   <div className="sabx-rule-tool">
                     <ToolPicker t={t} value={rule.tool} disabled={saving || locked} onSelect={(value) => setRule(index, { tool: value })} />
                   </div>
@@ -942,7 +1031,7 @@ export function makeCommandsCard(form: any, t: Translate) {
  * @param form - `ctx.configForms.get(SETTINGS_ENTRY_ID)` 返回的表单 controller。
  * @param t - 词典翻译函数（`ctx.locale.bind(NS)`）。
  */
-export function makeCommandRulesEditor(form: any, t: Translate) {
+export function makeCommandRulesEditor(form: FormController | null, t: Translate) {
   return makeCommandsCard(form, t)
 }
 
@@ -952,17 +1041,21 @@ export function makeCommandRulesEditor(form: any, t: Translate) {
  * @param form - `ctx.configForms.get(SETTINGS_ENTRY_ID)` 返回的表单 controller。
  * @param t - 词典翻译函数（`ctx.locale.bind(NS)`）。
  */
-export function makeNoReadCard(form: any, t: Translate) {
+export function makeNoReadCard(form: FormController | null, t: Translate) {
   return function NoReadCard() {
-    const [rules, setRules] = useState<any[]>([])
+    const [rules, setRules] = useState<NoReadRuleRow[]>([])
     const [open, setOpen] = useState(false)
     const [saving, setSaving] = useState(false)
     const [error, setError] = useState<string | null>(null)
+    // 行标识发生器与草稿保护标记（语义同授权目录卡片）。
+    const nextId = useRef(1)
+    const dirtyRef = useRef(false)
 
     useEffect(() => {
       const update = () => {
         try {
-          setRules(currentNoRead(form))
+          if (dirtyRef.current) return // 有未保存草稿，不覆盖
+          setRules(currentNoRead(form).map((rule) => ({ ...rule, id: nextId.current++ })))
         } catch {
           // a stale form must never break the section render
         }
@@ -977,24 +1070,28 @@ export function makeNoReadCard(form: any, t: Translate) {
     const pendingCount = noReadDirty(rules, saved) ? 1 : 0
     const resetProps = resetButtonProps(overridden, t)
 
-    const setRule = (index: number, patch: Partial<any>) => {
+    const setRule = (index: number, patch: Partial<NoReadRuleRow>) => {
       setError(null)
+      dirtyRef.current = true
       setRules((previous) => previous.map((rule, i) => (i === index ? { ...rule, ...patch } : rule)))
     }
 
     const addRule = () => {
       setError(null)
-      setRules((previous) => [...previous, { pattern: '', action: 'deny' }])
+      dirtyRef.current = true
+      setRules((previous) => [...previous, { id: nextId.current++, pattern: '', action: 'deny' }])
     }
 
     const removeRule = (index: number) => {
       setError(null)
+      dirtyRef.current = true
       setRules((previous) => previous.filter((_, i) => i !== index))
     }
 
     const restoreSaved = () => {
-      setRules(currentNoRead(form))
+      setRules(currentNoRead(form).map((rule) => ({ ...rule, id: nextId.current++ })))
       setError(null)
+      dirtyRef.current = false
     }
 
     /** 清除用户层覆盖，回到组合（部署）默认值。 */
@@ -1064,7 +1161,7 @@ export function makeNoReadCard(form: any, t: Translate) {
               <div className="sabx-empty">{t('noread.empty')}</div>
             ) : (
               rules.map((rule, index) => (
-                <div key={index} className="sabx-rule-row sabx-noread-row">
+                <div key={rule.id} className="sabx-rule-row sabx-noread-row">
                   <div className="sabx-rule-pattern">
                     <input
                       className="sabx-input sabx-mono"
@@ -1078,13 +1175,13 @@ export function makeNoReadCard(form: any, t: Translate) {
                     />
                   </div>
                   <div className="sabx-rule-action">
-                    <Seg options={NOREAD_ACTIONS} selected={rule.action} onSelect={(value) => setRule(index, { action: value })} ariaLabel={t('cmds.actionAria')} compact />
+                    <Seg options={NOREAD_ACTIONS} selected={rule.action} onSelect={(value) => setRule(index, { action: value })} ariaLabel={t('noread.actionAria')} compact />
                   </div>
                   <button
                     className="sabx-icon-btn sabx-rule-remove"
                     type="button"
-                    aria-label={t('cmds.removeAria')}
-                    title={t('cmds.removeTitle')}
+                    aria-label={t('noread.removeAria')}
+                    title={t('noread.removeTitle')}
                     disabled={saving || locked}
                     onClick={() => removeRule(index)}
                   >
@@ -1123,7 +1220,7 @@ export function makeNoReadCard(form: any, t: Translate) {
  * @param form - `ctx.configForms.get(SETTINGS_ENTRY_ID)` 返回的表单 controller（可为 null）。
  * @param t - 词典翻译函数（`ctx.locale.bind(NS)`）。
  */
-export function makeAllowlistSection(form: any, t: Translate) {
+export function makeAllowlistSection(form: FormController | null, t: Translate) {
   const DirsCard = makeDirsCard(form, t)
   const CommandsCard = makeCommandsCard(form, t)
   const NoReadCard = makeNoReadCard(form, t)
@@ -1147,15 +1244,42 @@ export function makeAllowlistSection(form: any, t: Translate) {
 }
 
 /**
- * 客户端插件入口：注册词典、设置页分节并取本插件条目的配置表单。
+ * provider 行详情页标题旁的徽标。client 半件运行在浏览器侧拿不到宿主平台，
+ * 文案用中性表述——具体平台行为由说明页与 provider.mjs 的宿主日志交代。
+ * （与 lib/client.js 的 makeProviderPlatformBadge 保持一致。）
+ */
+function makeProviderPlatformBadge(t: Translate) {
+  return function ProviderPlatformBadge(props: { subject?: { kind?: string; row?: { rowId?: string } } }) {
+    const subject = props && props.subject
+    if (!subject || subject.kind !== 'row' || !subject.row || subject.row.rowId !== PROVIDER_ROW_ID) return null
+    return <span className="sabx-badge">{t('provider.badge')}</span>
+  }
+}
+
+/**
+ * provider 行说明页（行详情页经 row.config 槽位打开）：用一段人话交代平台
+ * 边界，代替异常或沉默。Windows 上本行启用时宿主侧自动空转并记一次性日志
+ * （见 lib/provider.mjs 的 InertProvider），界面可见的提示就在这里。
+ */
+function makeProviderPlatformNotice(t: Translate) {
+  return function ProviderPlatformNotice(props: { view?: string }) {
+    if (props && props.view === 'summary') {
+      return t('provider.summary')
+    }
+    return <div className="sabx-callout-note" role="note">{t('provider.notice')}</div>
+  }
+}
+
+/**
+ * 客户端插件入口：注册设置页分节、插件面板配置界面，并取本插件条目的配置表单。
  * 注册写法与官方设置分节一致（ctx.slots.inject + register）。
  */
-export function apply(ctx: any) {
+export function apply(ctx: ClientContext) {
   // 词典注册先于分节注册：宿主按当前语言渲染，回退链末端永远是 en。
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'sandbox-allowlist: dictionaries')
   // 每个 namespace 一个稳定翻译函数；渲染时读取宿主当前语言。
   const t: Translate = ctx.locale.bind(NS)
-  let form: any = null
+  let form: FormController | null = null
   try {
     form = ctx.configForms.get(SETTINGS_ENTRY_ID)
   } catch {
@@ -1169,4 +1293,37 @@ export function apply(ctx: any) {
     order: 30,
     label: () => t('section.title'),
   }, section))
+  // 插件面板（Plugins 页）的配置界面：同一份三卡片分节挂到插件详情页。
+  //   - plugins.bundle.config（key=包名）：包详情页在描述与行列表之间渲染；
+  //   - plugins.row.config（key=「包名#行id」）：策略行获得「配置」入口，行详情页
+  //     渲染（props.form 与本闭包的 form 是同一份 controller，忽略 props）。
+  // 两个槽位由 Plugins 页主注册声明，ctx.slots.inject 会等待声明出现；页面离开
+  // 后声明塌缩、注册随之下线，回到页面时随声明自动重挂。summary 视图给一行说明。
+  const bundleConfig = function BundleConfig(props: { view?: string }) {
+    if (props && props.view === 'summary') return t('section.summary')
+    const Section = section
+    return <Section />
+  }
+  ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
+    name: 'plugins.bundle.config',
+    id: 'sandbox-allowlist-config',
+    key: BUNDLE_CONFIG_KEY,
+  }, bundleConfig))
+  ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
+    name: 'plugins.row.config',
+    id: 'sandbox-allowlist-policy-config',
+    key: ROW_CONFIG_KEY,
+  }, bundleConfig))
+  // provider 行的平台提示：详情页标题旁的「仅 Linux 生效」徽标 + 行说明页。
+  // 行页的存在本身由这条 row.config 注册打开（没有配置页的行不生成详情页），
+  // 页面里渲染平台边界说明——Windows 上即使启用也只是空转（见 provider.mjs）。
+  ctx.slots.inject('plugins.detail.badge', () => ctx.slots.register({
+    name: 'plugins.detail.badge',
+    id: 'sandbox-allowlist-platform-badge',
+  }, makeProviderPlatformBadge(t)))
+  ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
+    name: 'plugins.row.config',
+    id: 'sandbox-allowlist-provider-config',
+    key: PROVIDER_ROW_CONFIG_KEY,
+  }, makeProviderPlatformNotice(t)))
 }

@@ -7,7 +7,7 @@
  * Usage: node test/readonly-probe.mjs <runnerPath>
  */
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -20,6 +20,11 @@ const OUTSIDE = process.env.DSH_TEST_PROBE_DIR ?? join(tmpdir(), 'dsh-probe-outs
 mkdirSync(WORKSPACE, { recursive: true })
 mkdirSync(OUTSIDE, { recursive: true })
 const OUTSIDE_LOG = join(OUTSIDE, 'test.log')
+// 探测结束后回收默认临时目录（仅在未通过环境变量指向真实部署布局时）。
+process.on('exit', () => {
+  if (!process.env.DSH_TEST_WORKSPACE) { try { rmSync(WORKSPACE, { recursive: true, force: true }) } catch { /* best effort */ } }
+  if (!process.env.DSH_TEST_PROBE_DIR) { try { rmSync(OUTSIDE, { recursive: true, force: true }) } catch { /* best effort */ } }
+})
 writeFileSync(OUTSIDE_LOG, 'probe target\n', 'utf8')
 const PROFILE_SETTINGS = join(homedir(), '.dsh', 'settings.yaml')
 
@@ -34,3 +39,4 @@ run(`READ outside workspace (${OUTSIDE_LOG})`, ['cmd', '/c', 'type', `"${OUTSIDE
 run(`READ outside workspace (user profile settings.yaml: ${PROFILE_SETTINGS})`, ['cmd', '/c', 'type', `"${PROFILE_SETTINGS}"`])
 run(`WRITE outside workspace in READ-ONLY, expect FAIL (${OUTSIDE})`, ['cmd', '/c', `echo x> "${join(OUTSIDE, 'ro-write-test.txt')}"`])
 run(`WRITE to workspace in READ-ONLY, expect FAIL (${WORKSPACE})`, ['cmd', '/c', `echo x> "${join(WORKSPACE, 'ro-ws-test.txt')}"`])
+

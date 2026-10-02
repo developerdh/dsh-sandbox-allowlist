@@ -29,7 +29,6 @@ export const zh = {
   'dirs.name': '授权目录',
   'dirs.desc': '允许沙箱内代理直接写入的工作区外目录；仍受文件沙箱约束，写入无需审批。',
   'dirs.fieldLabel': '工作区外的受信可写目录',
-  'dirs.reset': '重置为默认',
   'dirs.empty': '尚未授权任何目录。点击「添加目录」新增一行。',
   'dirs.placeholder': 'D:\\Shared\\Tools',
   'dirs.rowAria': '授权目录 {index}',
@@ -90,6 +89,9 @@ export const zh = {
   'noread.save': '保存禁读规则',
   'noread.count': '{count} 条规则',
   'noread.countPending': ' · 未保存修改',
+  'noread.actionAria': '禁读动作',
+  'noread.removeAria': '删除禁读规则',
+  'noread.removeTitle': '删除该禁读规则',
 
   // ── 通用 ────────────────────────────────────────────────────────────────────
   'section.title': '沙箱授权',
@@ -120,6 +122,7 @@ export const zh = {
   'error.resetRejected': '恢复默认被拒绝：配置已在别处修改（revision 冲突）或宿主未接受本次写入，请重新载入后再试。',
   'common.resetOverrideTitle': '清除用户层覆盖，回到部署默认',
   'common.resetNotOverrideTitle': '当前未覆盖部署默认',
+  'common.reset': '重置为默认',
   'provider.badge': '仅 Linux 生效',
   'provider.summary': '仅 Linux（bwrap）实际生效；Windows 空转，macOS 忽略授权目录。',
   'provider.notice': '此行是 Linux 专用扩展：只有在 Linux（bwrap 运行器）上才会把「授权目录」加入沙箱写白名单。Windows 上官方 ACL 沙箱保持原样，本行即使启用也自动空转、不产生任何效果；macOS（seatbelt）与其余运行器无法扩展，授权目录会被忽略并记录一次警告。',
@@ -139,7 +142,6 @@ export const en = {
   'dirs.name': 'Authorized directories',
   'dirs.desc': 'Out-of-workspace directories the sandboxed agent may write to directly; still bounded by the file sandbox, and writes need no approval.',
   'dirs.fieldLabel': 'Trusted writable directories outside the workspace',
-  'dirs.reset': 'Reset to default',
   'dirs.empty': 'No directory authorized yet. Click "Add directory" to create a row.',
   'dirs.placeholder': 'D:\\Shared\\Tools',
   'dirs.rowAria': 'Authorized directory {index}',
@@ -200,6 +202,9 @@ export const en = {
   'noread.save': 'Save read restrictions',
   'noread.count': '{count} rule(s)',
   'noread.countPending': ' · unsaved changes',
+  'noread.actionAria': 'Read-restriction action',
+  'noread.removeAria': 'Delete read restriction',
+  'noread.removeTitle': 'Delete this read restriction',
 
   // ── Shared ──────────────────────────────────────────────────────────────────
   'section.title': 'Sandbox authorization',
@@ -230,6 +235,7 @@ export const en = {
   'error.resetRejected': 'Resetting to the default was rejected: the configuration changed elsewhere (revision conflict) or the host did not accept the write. Reload and try again.',
   'common.resetOverrideTitle': 'Clear the user-layer override and return to the deployment default',
   'common.resetNotOverrideTitle': 'The deployment default is not overridden',
+  'common.reset': 'Reset to default',
   'provider.badge': 'Linux only',
   'provider.summary': 'Only takes effect on Linux (bwrap); on Windows this row is inert, and macOS ignores authorized directories.',
   'provider.notice': 'This row is a Linux-only extension: only on Linux (the bwrap runner) are authorized directories added to the sandbox write allow-list. On Windows the official ACL sandbox stays as-is and this row is inert even when enabled; macOS (seatbelt) and other runners cannot be extended — authorized directories are ignored with a one-time warning.',

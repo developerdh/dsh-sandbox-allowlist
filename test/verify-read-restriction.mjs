@@ -30,6 +30,14 @@ import FsPlugin from '../lib/fs.mjs'
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-allowlist-home-'))
 
 const WORKSPACE = process.env.DSH_TEST_WORKSPACE ?? join(tmpdir(), 'dsh-verify-ws')
+// 退出时回收隔离目录（口径同 verify-command-gate）：scratch 在测试尾部已删，
+// 这里兜底 DSH_HOME 与默认工作区（外部指定的工作区不动）。
+process.on('exit', () => {
+  try { rmSync(process.env.DSH_HOME, { recursive: true, force: true }) } catch { /* best effort */ }
+  if (!process.env.DSH_TEST_WORKSPACE) {
+    try { rmSync(WORKSPACE, { recursive: true, force: true }) } catch { /* best effort */ }
+  }
+})
 mkdirSync(WORKSPACE, { recursive: true })
 const scratch = mkdtempSync(join(WORKSPACE, '.sabx-noRead-verify-'))
 const T = (name) => join(scratch, name)
@@ -200,3 +208,4 @@ try {
   try { await fsFiber.dispose() } catch { /* best effort */ }
   rmSync(scratch, { recursive: true, force: true })
 }
+
