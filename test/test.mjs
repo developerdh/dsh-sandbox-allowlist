@@ -25,7 +25,6 @@ import {
   normalizeCommand,
   patternToCommandRegExp,
   compileCommandRules,
-  resolveCommandAction,
   validateCommandRule,
 } from '../lib/command-rules.mjs'
 import {
@@ -122,10 +121,9 @@ assert.equal(match('bash', 'rm -rf /tmp/x'), 'deny')        // tool-omitted appl
 assert.equal(match('pwsh', 'rm -rf /tmp/x'), 'deny')        // and to pwsh
 assert.equal(match('bash', 'npm test'), null)               // no match
 
-// resolveCommandAction applies the configured fallback (delegate keeps behavior)
-assert.equal(resolveCommandAction(rules, 'bash', 'npm test', 'delegate'), 'delegate')
-assert.equal(resolveCommandAction(rules, 'bash', 'npm test', 'ask'), 'ask')
-assert.equal(resolveCommandAction([], 'bash', 'npm test', 'delegate'), 'delegate')
+// resolveCommandAction was removed: the gates call compileCommandRules and
+// apply the configured fallback themselves (null ⇒ delegate/ask/deny default,
+// asserted by the `npm test` line above)
 
 // malformed rules are skipped, never thrown
 assert.equal(validateCommandRule({ pattern: 'git *', action: 'allow' }), null)
@@ -187,7 +185,7 @@ assert.match(denyReason('bash', 'rm -rf /'), /deny rule/)
     assert.equal(stripDaclSddl('D:', 'S-1-4-1-1').sddl, 'D:')
 
     // non-Windows invocation is a no-op; on Windows it spawns — never touched here
-    const noop = revokeWriteAces([], 'S-1-4-1-2')
+    const noop = await revokeWriteAces([], 'S-1-4-1-2')
     assert.equal(noop.ok, true)
 
     // PowerShell host resolution: a host must resolve on win32, none elsewhere
@@ -332,6 +330,16 @@ try {
   assert.equal(hit('D:/x/vault/deep/a.txt').action, 'deny')
   assert.equal(hit('D:/x/vaulty/a.txt'), null, 'segment boundary respected')
   assert.equal(hit('vault/a.txt'), null, 'relative path without a leading separator misses the anchored pattern')
+
+  // 回归（M2）：目录级规则对分隔符变体不漏判——模型可用 D:/dir 代替 D:\dir
+  const vaultRules = compileNoReadRules([{ pattern: 'D:\\Vault', action: 'deny' }])
+  assert.equal(resolveNoRead(vaultRules, 'D:/Vault/secret.txt')?.action, 'deny', 'forward-slash target still matches a backslash dir rule')
+  assert.equal(resolveNoRead(vaultRules, 'D:\\Vault\\secret.txt')?.action, 'deny', 'the canonical spelling still matches')
+  assert.equal(resolveNoRead(vaultRules, 'D:/Vault2/secret.txt'), null, 'segment boundary respected across separators')
+  // 尾部斜杠：规则侧与目标侧的尾分隔符都归一，行为有断言兜底
+  const slashed = compileNoReadRules([{ pattern: 'D:/bank/', action: 'deny' }])
+  assert.equal(resolveNoRead(slashed, 'D:/bank/x')?.action, 'deny', 'trailing-slash rule spelling normalizes')
+  assert.equal(resolveNoRead(vaultRules, 'D:\\Vault\\')?.action, 'deny', 'trailing-slash target still hits the dir rule')
 
   // case sensitivity follows the platform convention (win insensitive)
   if (process.platform === 'win32') {
@@ -530,6 +538,13 @@ try {
     assert.equal(resolveTool('pwsh', describeStatement('Get-Content ./id.pem')), 'ask')
     assert.equal(resolveTool('bash', describeStatement('Get-Content ./id.pem')), null, 'a tool-scoped rule does not leak to the other shell')
 
+    // 回归（H2）：program 段两侧折叠、参数段大小写敏感——旗标语义不可被大小写折叠抹掉
+    const caseRules = compileCommandRules([{ pattern: 'git branch -d *', action: 'allow' }])
+    assert.equal(caseRules('bash', 'git branch -d feature-x'), 'allow', 'the spelled form matches')
+    assert.equal(caseRules('bash', 'git branch -D feature-x'), null, 'flag case is semantic: -d must not match -D')
+    const pwshCase = compileCommandRules([{ pattern: 'Get-Content *', action: 'ask' }])
+    assert.equal(pwshCase('pwsh', 'get-content ./f.txt'), 'ask', 'the program token folds on both sides')
+
     assert.ok(validateCommandRule({ action: 'allow' }) !== null, 'a rule without a pattern is refused')
     assert.ok(validateCommandRule({ pattern: 'git *', action: 'grant' }) !== null, 'unknown actions are refused')
   }
@@ -556,6 +571,20 @@ try {
     assert.equal(kind('docker ps'), 'read', 'docker ps is a read-only form')
     assert.equal(kind('docker run x'), 'external')
     assert.equal(kind('acme-unknown --flag'), 'unknown')
+
+    // 回归（M4）：git 的破坏性 pathspec 形式——checkout/restore 丢弃工作区改动
+    assert.equal(kind('git checkout .'), 'destructive', 'checkout with a pathspec discards changes')
+    assert.equal(kind('git checkout -- ./f.txt'), 'destructive', 'checkout -- pathspec is destructive')
+    assert.equal(kind('git checkout origin/main -- src'), 'destructive', 'checkout <tree> -- path overwrites the working tree')
+    assert.equal(kind('git checkout main'), 'local-write', 'branch switching is not destructive')
+    assert.equal(kind('git checkout -b feature'), 'local-write', 'branch creation is not destructive')
+    assert.equal(kind('git restore .'), 'destructive', 'git restore discards working-tree changes')
+    assert.equal(kind('git restore --staged ./f.txt'), 'local-write', 'restore --staged only unstages')
+
+    // 回归（M5）：git grep -O/<pager> 会把 pager 值当程序跑——读类夹带程序加载
+    assert.equal(kind("git grep -O'node -e 1' pat"), 'opaque', 'git grep -O runs the pager value as a program')
+    assert.equal(kind('git grep --open-files-in-pager pat'), 'opaque', 'long spelling guarded too')
+    assert.equal(kind('git grep pat'), 'read', 'a plain grep stays a read')
 
     // path scope feeds local-write verdicts
     const inScope = (token) => !/^[A-Za-z]:[\\/]/.test(token)
@@ -620,6 +649,31 @@ try {
 
     const single = analyzeCommand("echo 'no $(substitution) here'", 'bash', { inScope: () => true })
     assert.equal(single.substitutions.length, 0, 'single quotes suppress substitution')
+
+    // 回归（C1）：heredoc 定界符只认字面位置的 << —— 字符串参数里的 '<<EOF'
+    // 不得开启伪 heredoc，否则后续真实命令行会被当作 DATA 吞掉、逃过判定。
+    const quotedMarker = analyzeCommand("grep '<<EOF' file\nrm -rf ./gone\nEOF\necho done", 'bash', { inScope: () => true })
+    assert.ok(quotedMarker.statements.some((statement) => statement.text.includes('rm -rf')), 'a quoted <<EOF is a string argument, not a heredoc opener')
+    assert.ok(quotedMarker.statements.some((statement) => statement.text.trim() === 'echo done'), 'lines after the false opener stay visible to analysis')
+    const realHeredoc = analyzeCommand('cat > ./out.txt <<EOF\nhello\nEOF\necho done', 'bash', { inScope: () => true })
+    assert.equal(realHeredoc.statements.some((statement) => statement.text.includes('hello')), false, 'a real heredoc body is data, never a statement')
+    assert.ok(realHeredoc.statements.some((statement) => statement.text.trim() === 'echo done'), 'statements after the heredoc body are analyzed')
+
+    // 回归（C2）：链式重定向的每个目标都要单独过 scope 检查
+    const chained = analyzeCommand('echo pwned > ./ok.txt>D:/Elsewhere/evil.txt', 'bash', {
+      inScope: (token) => !token.startsWith('D:/Elsewhere'),
+    })
+    assert.equal(chained.redirects.length, 2, 'chained redirects produce one entry per target')
+    assert.equal(chained.redirects[1].inScope, false, 'the second target is checked, not swallowed into the first')
+
+    // 回归（H1）：目标是命令替换的重定向不可解析（fail-closed），绝不判无害
+    const dynamicTarget = analyzeCommand('echo pwned > $(cat t.txt)', 'bash', { inScope: () => true })
+    assert.ok(dynamicTarget.unresolved.some((item) => item.kind === 'redirect-target'), 'a substitution redirect target is unresolved')
+
+    // 回归（M3）：>&2 等 fd 复制不是分隔符，语句不被 & 拆断
+    const fdDup = analyzeCommand('echo hi >&2', 'bash', { inScope: () => true })
+    assert.equal(fdDup.statements.length, 1, 'fd duplication keeps the statement whole')
+    assert.ok(fdDup.statements[0].text.includes('>&2'), 'and the fd-dup text survives splitting')
   }
 
   // ── scope predicate (workspace ∪ granted roots) ───────────────────────────
@@ -634,6 +688,13 @@ try {
     assert.equal(inScope('../../Elsewhere/x'), false, '.. escapes are resolved before the check')
     assert.equal(inScope('~/.ssh/id_rsa'), false, 'home-relative paths leave the workspace')
     assert.equal(inScope('/etc/passwd'), false, 'a POSIX absolute path has no known mapping')
+    // 回归（L1）：无 cwd 时相对路径不可证明在界内（fail-closed）；POSIX 根的
+    // 宿主上 POSIX 绝对路径可以正常比较。
+    const noCwd = makeScopePredicate(['D:/Repo'], undefined)
+    assert.equal(noCwd('./src/a.ts'), false, 'a relative path with no cwd cannot be proven in scope')
+    const posixRoots = makeScopePredicate(['/home/me/repo'], '/home/me/repo')
+    assert.equal(posixRoots('/home/me/repo/a.ts'), true, 'POSIX absolute tokens compare on a POSIX-rooted host')
+    assert.equal(posixRoots('/etc/passwd'), false, 'and still refuse paths outside the roots')
   }
 
   // ── meta-program expansion (package.json scripts) ─────────────────────────
@@ -652,6 +713,9 @@ try {
     assert.equal(expand('pnpm', 'publish'), null, 'not a script')
     const broken = makeScriptExpander({ workspaceRoot: 'D:/Repo', readFile: () => { throw new Error('ENOENT') }, onWarn: () => {} })
     assert.equal(broken('pnpm', 'test'), null, 'an unreadable manifest degrades to null (fail-closed)')
+    // 回归（C3）：runner 附加参数由包管理器转发给脚本——并入具名脚本体判定
+    assert.match(expand('pnpm', 'test -- --reporter dot'), /vitest run -- --reporter dot/, 'runner arguments are folded into the named script body')
+    assert.equal(expand('pnpm', 'run lint -- --fix'), 'eslint src -- --fix', 'args reach the named script, not the hooks')
   }
 
   // ── decision engine: aggregation and explanations ─────────────────────────
@@ -669,11 +733,28 @@ try {
     const delegated = sandbox({ rules: [], default: 'delegate' }, 'acme-tool run')
     assert.equal(delegated.verdict, 'delegate', 'an unknown program delegates')
 
+    // 回归（C3 端到端）：脚本展开带上的 runner 参数若指向界外，升级栅栏必须拦下
+    const expandCtx = {
+      ...context,
+      expandScript: makeScriptExpander({
+        workspaceRoot: 'D:/Repo',
+        readFile: () => JSON.stringify({ scripts: { save: 'tee' } }),
+        onWarn: () => {},
+      }),
+    }
+    const laundered = decide({ source: { rules: [] }, tool: 'bash', command: 'pnpm save -- D:/Elsewhere/evil.txt', phase: 'escalation', context: expandCtx })
+    assert.equal(laundered.escalate, false, 'an out-of-scope runner argument blocks the auto-escalation')
+    const inScopeArg = decide({ source: { rules: [] }, tool: 'bash', command: 'pnpm save -- D:/Repo/ok.txt', phase: 'escalation', context: expandCtx })
+    assert.equal(inScopeArg.escalate, true, 'an in-scope runner argument still auto-escalates')
+
     const explained = explainDecision(denyWins)
     assert.match(explained, /判定：deny/, 'explainDecision renders the verdict')
     assert.match(explained, /rm -rf \.\/x/, 'and the per-statement breakdown')
 
     assert.equal(canonicalCommandKey('  git   push  origin '), canonicalCommandKey('git push origin'), 'canonical key collapses whitespace and quotes')
+    // 回归（H3）：引号是结构——无元字符的引号 span 只是拼法，带操作符的 span 改变命令
+    assert.equal(canonicalCommandKey('git "status"'), canonicalCommandKey('git status'), 'a plain quoted word shares one key')
+    assert.notEqual(canonicalCommandKey('rm "a;b"'), canonicalCommandKey('rm a;b'), 'quoted ; and statement separator ; never collide')
   }
 
   // ── audit / session cache / proposals ─────────────────────────────────────

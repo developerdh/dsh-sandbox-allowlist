@@ -16,7 +16,7 @@
  *   node test/verify-command-gate.mjs
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -27,6 +27,14 @@ import PolicyPlugin from '../lib/policy.mjs'
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-allowlist-home-'))
 
 const WORKSPACE = process.env.DSH_TEST_WORKSPACE ?? join(tmpdir(), 'dsh-verify-ws')
+// 退出时回收隔离目录：DSH_HOME 总是删；测试工作区仅在使用默认临时路径时删
+// （外部通过 DSH_TEST_WORKSPACE 指向真实目录时绝不动它）。
+process.on('exit', () => {
+  try { rmSync(process.env.DSH_HOME, { recursive: true, force: true }) } catch { /* best effort */ }
+  if (!process.env.DSH_TEST_WORKSPACE) {
+    try { rmSync(WORKSPACE, { recursive: true, force: true }) } catch { /* best effort */ }
+  }
+})
 const rules = [
   { tool: 'bash', pattern: 'git *', action: 'allow' },
   { tool: 'pwsh', pattern: 'git *', action: 'ask' },
@@ -281,3 +289,4 @@ assert.equal(calls.downstream, 3, 'mixed allow/unknown line reaches the downstre
 
 console.log('verify-command-gate: all checks passed')
 await policyFiber.dispose()
+

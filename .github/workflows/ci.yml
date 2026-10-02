@@ -1,8 +1,10 @@
-# CI：PR 进入 main 前跑 typecheck + 全量测试，与发布流水线同一套口径。
+# CI：PR 进入 main 前跑 typecheck + 可离线执行的全部测试，与发布流水线同一套口径。
 #
 # 仅在 PR 上触发（main 的分支保护规则把 "CI / Test" 设为必需状态检查）；
 # main 上的直接推送与 v* tag 发布不在此重复跑（发布由 release.yml 承担）。
 # workflow_dispatch 支持在 Actions 页手动跑。
+# test:patch（validate-patch.mjs）需要真实 dsh 安装锚点，无法在 CI 无条件执行；
+# 配置了仓库变量 DSH_INSTALL_ANCHOR 时会追加一个补丁装载校验步骤（见下）。
 name: CI
 
 on:
@@ -23,7 +25,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4 # 版本取自 package.json 的 packageManager 字段
+      # 第三方 action 固定到完整 commit SHA（v4 = b906affc…），tag 可变、SHA 不可变。
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4，版本取自 package.json 的 packageManager 字段
 
       - uses: actions/setup-node@v4
         with:
@@ -45,3 +48,12 @@ jobs:
           npm run test:read-gate
           npm run test:client
           npm run test:dry-mount
+
+      # 可选步骤：validate-patch 需要真实 dsh 安装锚点才能校验 cordis.patch 装载；
+      # 在仓库 Settings → Secrets and variables → Actions 配置变量 DSH_INSTALL_ANCHOR
+      # （指向真实安装目录）后自动启用，未配置时跳过、不影响必需检查。
+      - name: Patch validation (optional, needs DSH_INSTALL_ANCHOR)
+        if: vars.DSH_INSTALL_ANCHOR != ''
+        run: node test/validate-patch.mjs
+        env:
+          DSH_INSTALL_ANCHOR: ${{ vars.DSH_INSTALL_ANCHOR }}

@@ -513,17 +513,17 @@
           <div class="dir-list">
             <div class="dir-row">
               <span class="dir-icon" aria-hidden="true">📁</span>
-              <input class="input mono" value="C:\Users\me\.wiki-mcp" aria-label="授权目录 1" />
+              <input class="input mono" value="D:\Notes\MyVault" aria-label="授权目录 1" />
               <button class="icon-btn" type="button" aria-label="删除"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
             </div>
             <div class="dir-row">
               <span class="dir-icon" aria-hidden="true">📁</span>
-              <input class="input mono" value="C:\Users\me\.ci-mcp" aria-label="授权目录 2" />
+              <input class="input mono" value="D:\Shared\Tools" aria-label="授权目录 2" />
               <button class="icon-btn" type="button" aria-label="删除"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
             </div>
             <div class="dir-row">
               <span class="dir-icon" aria-hidden="true">📁</span>
-              <input class="input mono" value="C:\Users\me\.k8s-mcp" aria-label="授权目录 3" />
+              <input class="input mono" value="D:\Data\exports" aria-label="授权目录 3" />
               <button class="icon-btn" type="button" aria-label="删除"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
             </div>
             <!-- 修复②：新增行 = 绿色「＋」徽章，行边框不随焦点高亮 -->
@@ -829,7 +829,7 @@
   function resetDirs() {
     var list = document.querySelector('#card-dirs .dir-list');
     while (list.firstChild) list.removeChild(list.firstChild);
-    ['C:\\Users\\me\\.wiki-mcp','C:\\Users\\me\\.ci-mcp','C:\\Users\\me\\.k8s-mcp']
+    ['D:\\Notes\\MyVault','D:\\Shared\\Tools','D:\\Data\\exports']
       .forEach(function (p) {
         var d = document.createElement('div');
         d.className = 'dir-row';

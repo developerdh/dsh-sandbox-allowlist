@@ -29,7 +29,9 @@ jobs:
         with:
           fetch-depth: 0 # Release 正文要读自上个 tag 以来的提交与 tag 附注
 
-      - uses: pnpm/action-setup@v4 # 版本取自 package.json 的 packageManager 字段
+      # 第三方 action 固定到完整 commit SHA（v4 = b906affc…），tag 可变、SHA 不可变，
+      # 避免发布链路（持有 NPM_TOKEN）被上游 tag 劫持。
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4，版本取自 package.json 的 packageManager 字段
 
       - uses: actions/setup-node@v4
         with:
@@ -65,7 +67,7 @@ jobs:
           if npm view "dsh-sandbox-allowlist@$VERSION" version >/dev/null 2>&1; then
             echo "dsh-sandbox-allowlist@$VERSION 已在 npm 上，跳过发布"
           else
-            PUBLISH_ARGS=()
+            PUBLISH_ARGS=(--provenance) # 公开仓库发布公开包：把发布与本次 workflow 绑定（npm 供应链加固）
             case "$VERSION" in *-*) PUBLISH_ARGS+=(--tag prerelease);; *) PUBLISH_ARGS+=(--tag latest);; esac
             npm publish "${PUBLISH_ARGS[@]}"
           fi
@@ -78,19 +80,22 @@ jobs:
           ARGS=()
           case "${GITHUB_REF_NAME}" in *-*) ARGS+=(--prerelease);; esac # 0.2.0-beta.1 → 预发布
 
-          # Release 正文 = 附注 tag 上的版本说明（打 annotated tag 可带说明）+ 更新内容（自上个 tag 以来的提交）+ 安装方式
+          # Release 正文 = 附注 tag 上的版本说明（打 annotated tag 可带说明）+ 更新内容 + 安装方式。
+          # 「更新内容」只在存在上一个 tag 时生成：首个 tag 没有可比基线，
+          # git log <tag> 会把仓库全部历史当更新内容列出来（失真），宁可省略。
           TAG_MSG=$(git tag -l --format='%(contents)' "${GITHUB_REF_NAME}")
           PREV=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
-          RANGE="${GITHUB_REF_NAME}"
-          [ -n "$PREV" ] && RANGE="${PREV}..${GITHUB_REF_NAME}"
-          CHANGES=$(git log --format='- %s' $RANGE)
+          CHANGES=""
+          [ -n "$PREV" ] && CHANGES=$(git log --format='- %s' "${PREV}..${GITHUB_REF_NAME}")
           VER="${GITHUB_REF_NAME#v}"
           BODY="${TAG_MSG}"
-          [ -n "$CHANGES" ] && BODY="${BODY}
+          if [ -n "$CHANGES" ]; then
+            BODY="${BODY}
 
           ## 更新内容
 
           ${CHANGES}"
+          fi
           BODY="${BODY}
 
           ## 安装

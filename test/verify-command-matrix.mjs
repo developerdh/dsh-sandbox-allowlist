@@ -113,7 +113,6 @@ const pad = (value, width) => String(value).padEnd(width)
 console.log(`${pad('tool', 6)}${pad('sandbox', 10)}${pad('escalation', 12)}command`)
 console.log('-'.repeat(120))
 
-let failures = 0
 const contextual = (command) =>
   /^pnpm (docs|deploy|test)\b/.test(command) ? withScripts : context
 for (const [tool, command, expectedSandbox, expectedEscalation, note] of rows) {
@@ -123,7 +122,6 @@ for (const [tool, command, expectedSandbox, expectedEscalation, note] of rows) {
   const sandboxLabel = sandbox.verdict
   const escalationLabel = escalation.escalate ? 'AUTO' : 'manual'
   const ok = sandboxLabel === expectedSandbox && escalation.escalate === expectedEscalation
-  if (!ok) failures += 1
   console.log(`${pad(ok ? ' ' : '!', 6)}${pad(sandboxLabel, 10)}${pad(escalationLabel, 12)}${command.replace(/\n/g, '\\n')}`)
   assert.equal(
     sandboxLabel,
@@ -137,4 +135,5 @@ for (const [tool, command, expectedSandbox, expectedEscalation, note] of rows) {
   )
 }
 console.log('-'.repeat(120))
-console.log(`verify-command-matrix: ${rows.length} rows, ${failures} mismatches (0 expected)`)
+console.log(`verify-command-matrix: ${rows.length} rows checked (a mismatch would have thrown at its row)`)
+

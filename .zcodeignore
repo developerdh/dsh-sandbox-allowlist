@@ -16,6 +16,9 @@ Thumbs.db
 /.pack
 /docs/temp
 
+# Local-only scratch（AGENTS.md 本地忽略目录：真实环境记录、隐私关键字清单等）
+/.local
+
 # ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
 .git/
 .hg/

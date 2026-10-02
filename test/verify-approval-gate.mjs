@@ -12,7 +12,7 @@
  *   node test/verify-approval-gate.mjs
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -30,6 +30,9 @@ import { classifyStatement } from '../lib/command-classes.mjs'
 // Isolate derived state (decision audit + rule proposals) from the real DSH
 // home, exactly like test/dry-mount.mjs isolates the grants manifest.
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-allowlist-home-'))
+// 进程退出（含断言失败中断）时回收隔离的 DSH_HOME，避免每次运行在系统临时
+// 目录堆积残留；rmSync force 对已清理/不存在的路径同样安全。
+process.on('exit', () => { try { rmSync(process.env.DSH_HOME, { recursive: true, force: true }) } catch { /* best effort */ } })
 
 // ── pure: statement splitting (shared by both gates) ───────────────────────
 assert.deepEqual(
@@ -338,3 +341,4 @@ assert.equal(await dispatchApproval({ ...escalation('call-1'), toolName: 'edit' 
 
 console.log('verify-approval-gate: all assertions passed')
 await policyFiber.dispose()
+
