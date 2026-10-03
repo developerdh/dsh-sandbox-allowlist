@@ -117,6 +117,8 @@ lib/meta/           行显示元数据（fs/provider 的中英描述，exports �
 lib/patterns.mjs    通配符匹配与目录展开（共享）
 cordis.patch.yml    bundle 补丁层（安装即挂载）
 scripts/revoke.mjs  Windows 应急清理脚本（通常无需使用：撤销已自动回收）
+scripts/verify-ace.mjs  Windows ACE 物化手动验证（check 模式核对期望 SID 与实际
+                    DACL；--roundtrip 在临时目录上单测物化原语，见文件头说明）
 src/client/         设置页「沙箱授权」分节源码（需 dsh 开发工具链构建）
 src/client/locales.ts  UI 词典（zh 真源 + en 镜像）
 test/               自检测试 / 端到端验证 / 对抗回归矩阵 / 补丁组合预检 / 干挂载
