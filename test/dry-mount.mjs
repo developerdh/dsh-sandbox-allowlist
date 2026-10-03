@@ -5,6 +5,9 @@
  *   1. resolve() carries extraRoots for the configured pattern;
  *   2. on Windows this also MATERIALIZES the workspace write-SID ACE on the
  *      trusted root (standing — reused by the real deployment later);
+ *   2b. on Windows a runtime allowlist addition (volatile in-place save) is
+ *       persisted to grants.json by the SAME resolve() — the manifest never
+ *       lags the OS state until a restart (regression: grants-manifest lag);
  *   3. the fs fence allows a write under the trusted root and denies one
  *      outside it.
  *
@@ -13,7 +16,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -37,6 +40,10 @@ const mktemp = (prefix) => {
 }
 const WORKSPACE = process.env.DSH_TEST_WORKSPACE ?? mktemp('dsh-drymount-ws-')
 const TRUSTED = process.env.DSH_TEST_TRUSTED ?? mktemp('dsh-drymount-trust-')
+// A second trusted root for the runtime-grant persistence regression check
+// (section 2b): it joins the allowlist only AFTER the first resolve, the way
+// a settings save mutates the volatile array in place.
+const TRUSTED2 = mktemp('dsh-drymount-trust2-')
 
 // The "outside" fixture must live outside the OS temp area: the stock fence
 // treats it as writable in workspace-write mode (`writableRoots` = workspace ∪
@@ -82,6 +89,9 @@ const policyFiber = ctx.plugin(PolicyPlugin, {
   // projection of it, and saving the form re-applies the plugin with the
   // merged config. No settings service is involved in reading them.
   allowedDirs: [`${TRUSTED}\\**`],
+  // expandRoots() TTL-caches its snapshot; zero makes every resolve() re-expand,
+  // so the section-2b in-place allowlist change is visible immediately.
+  expandTtlMs: 0,
 })
 await policyFiber
 
@@ -103,6 +113,46 @@ console.log(`resolved policy: mode=${policy.mode} extraRoots=${JSON.stringify(po
 //    child-process pipe capture is blocked by the dsh sandbox here.)
 if (process.platform === 'win32') {
   console.log('ACE materialization attempted for trusted root (no grant warnings above = success)')
+
+  // 2b. Runtime-grant persistence: a volatile in-place allowlist change (the
+  //     shape a settings save produces) must reach grants.json on the NEXT
+  //     resolve(), not only on the one-shot startup reconcile of a future
+  //     instance. Manifest writing is win32-only (acl === null returns early
+  //     on other platforms), so the regression check lives here too.
+  const manifestFile = join(process.env.DSH_HOME, 'sandbox-allowlist-grants.json')
+  const readWorkspaces = () => JSON.parse(readFileSync(manifestFile, 'utf8')).workspaces
+  // Precondition: the startup reconcile already recorded the first root under
+  // the workspace key (that path predates the fix).
+  const first = readWorkspaces()[WORKSPACE] ?? []
+  assert.ok(
+    first.some((root) => root.toLowerCase() === TRUSTED.toLowerCase()),
+    `startup manifest records the first trusted root, got ${JSON.stringify(first)}`,
+  )
+  // The save: add a second root at runtime, then let any consumer resolve().
+  // The schema wraps volatile values in a cosmokit Volatile: a frozen snapshot
+  // behind `get()`, replaced wholesale by the owning runtime through the
+  // `cosmokit.volatile.write` symbol — replicate that protocol exactly (a
+  // plain-array shape falls back to a direct push).
+  if (!existsSync(TRUSTED2)) mkdirSync(TRUSTED2, { recursive: true })
+  const raw = ctx.sandboxPolicy.patterns
+  const WRITE = Symbol.for('cosmokit.volatile.write')
+  if (raw !== null && typeof raw === 'object' && WRITE in raw) {
+    raw[WRITE](Object.freeze([...raw.get(), TRUSTED2]))
+  } else {
+    raw.push(TRUSTED2)
+  }
+  const policy2 = ctx.sandboxPolicy.resolve()
+  assert.ok(
+    policy2.extraRoots.some((root) => root.toLowerCase() === TRUSTED2.toLowerCase()),
+    'the second root resolves immediately (TTL cache disabled)',
+  )
+  // THE REGRESSION: the manifest must already list it — no restart, no reload.
+  const second = readWorkspaces()[WORKSPACE] ?? []
+  assert.ok(
+    second.some((root) => root.toLowerCase() === TRUSTED2.toLowerCase()),
+    `grants.json must persist a runtime grant immediately, got ${JSON.stringify(second)}`,
+  )
+  console.log(`runtime grant persisted immediately: ${JSON.stringify(second)}`)
 }
 
 // 3. fs fence: must ALLOW the trusted-root write (no FS_SANDBOX_DENIED) and

@@ -134,6 +134,9 @@ lib/meta/           row display metadata (zh/en descriptions for fs/provider, ex
 lib/patterns.mjs    wildcard matching and directory expansion (shared)
 cordis.patch.yml    bundle patch layer (mounted on install)
 scripts/revoke.mjs  Windows emergency cleanup script (normally unnecessary: revocation is reclaimed automatically)
+scripts/verify-ace.mjs  manual verification of the Windows ACE materialization (check mode
+                    compares the expected SID against the live DACL; --roundtrip unit-tests
+                    the materialization primitive on a throwaway directory — see the file header)
 src/client/         settings-page "Sandbox authorization" section source (needs the dsh dev toolchain to build)
 src/client/locales.ts  UI dictionaries (zh source of truth + en mirror)
 test/               self-tests / end-to-end validation / adversarial regression matrix / patch pre-check / dry mount
