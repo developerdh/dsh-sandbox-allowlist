@@ -19,3 +19,4 @@ Thumbs.db
 # Local-only scratch (AGENTS.md 约定的本地忽略目录：真实环境记录、隐私关键字
 # 清单等绝不能入库；本行之外的忽略机制不含 .local/，一次 git add -A 就会带上)
 /.local
+/docs/tasks
