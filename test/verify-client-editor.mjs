@@ -30,12 +30,14 @@ let currentHooks = null
 const reactStub = {
   useState: (init) => {
     const slot = currentHooks.cursor
+    const hooks = currentHooks // setter 绑定创建时的组件槽位：异步续体（fetch
+    // 往返之后）里 setState 也必须落回原组件——与真实 React 语义一致。
     currentHooks.cursor += 1
-    if (currentHooks.hooks.length <= slot) currentHooks.hooks[slot] = typeof init === 'function' ? init() : init
+    if (hooks.hooks.length <= slot) hooks.hooks[slot] = typeof init === 'function' ? init() : init
     const set = (value) => {
-      currentHooks.hooks[slot] = typeof value === 'function' ? value(currentHooks.hooks[slot]) : value
+      hooks.hooks[slot] = typeof value === 'function' ? value(hooks.hooks[slot]) : value
     }
-    return [currentHooks.hooks[slot], set]
+    return [hooks.hooks[slot], set]
   },
   useRef: (init) => {
     const slot = currentHooks.cursor
@@ -69,12 +71,19 @@ globalThis.window = {
 new Function(source)() // eslint-disable-line no-new-func
 
 assert.ok(captured, 'exports captured')
+// 会话入口探测桩：模拟 win32 宿主（状态路由可达）。Node 22 自带全局 fetch，
+// 不打桩探测会真的请求相对路径并失败 ⇒ 入口不注册 ⇒ 断言落空。
+// 数据通道为自建路由 + 统一信封（POST /sandbox-allowlist/api/*，dsh-jenkins
+// 实证路径）——探测收 { ok: true, value } 信封即认为宿主在位。
+globalThis.fetch = async () => ({ ok: true, json: async () => ({ ok: true, value: { supported: true, current: '', workspaces: {} } }) })
+// 注册现在先探测后挂槽（异步）：每个 apply 之后 flush 一次事件循环再收注册。
+const flushRegistration = () => new Promise((resolve) => setTimeout(resolve, 20))
 // The static inject list may only name services the host always provides:
-// `locale` (dsh-client-locale) carries the dictionaries, `configForms` is the
-// 0.2.0 settings source — both are guaranteed on the target host family. A
-// host-optional service here would leave the entry pending and fail web boot.
-// `connection` is deliberately absent: the section never consumes it, and a
-// declared-but-unused service needlessly tightens host compatibility.
+// `locale` (dsh-client-locale) carries the dictionaries and `configForms` is
+// the 0.2.0 settings source. The authorization panel's data channel is the
+// plugin's own host route (same-origin POST), deliberately NOT connection —
+// the self-built envelope path is the dsh-jenkins-proven contract and keeps
+// the inject face minimal.
 assert.deepEqual(captured.inject, ['slots', 'configForms', 'locale'], 'inject list intact')
 assert.equal(typeof captured.apply, 'function', 'apply exported')
 
@@ -177,13 +186,222 @@ assert.equal(
   'placeholder keys keep their placeholders',
 )
 // The real runtime invokes each inject callback to register its slot; apply()
-// registers the settings section plus the Plugins-page config slots.
+// registers the settings section, the Plugins-page config/badge slots, and —
+// once the state-route probe confirms a win32 host — the session utilities panel.
+await flushRegistration()
 injected.forEach(({ fn }) => fn())
-assert.ok(registered.length === 5, 'five slots registered (settings.section + Plugins-page config/badge)')
+assert.ok(registered.length === 6, 'six slots registered (settings.section + Plugins-page config/badge + session utilities panel)')
 assert.equal(registered[0].spec.name, 'settings.section')
 assert.equal(registered[0].spec.id, 'sandbox-allowlist')
 assert.equal(registered[0].spec.label(), '沙箱授权')
 assert.equal(typeof registered[0].component, 'function', 'section component is a function')
+
+// 会话区授权状态面板槽位：id 前缀隔离、label 走词典、组件（未打开时）渲染
+// 一个带 aria-label 的图标按钮——缺 connection 也一样渲染（点开才失败可见）。
+const panelSlot = registered.find((r) => r.spec.name === 'conversation.session.header.utilities')
+assert.ok(panelSlot, 'session utilities panel registered')
+assert.equal(panelSlot.spec.id, 'sandbox-allowlist-panel', 'panel slot id is plugin-prefixed')
+assert.equal(panelSlot.spec.label(), '授权状态', 'panel slot label resolves from the dictionary')
+// 组件是 hooks 组件：必须作为「节点」交给 render()（它按类型挂 hooks 槽位后
+// 再调用组件函数），直接调用会在 hooks 运行时之外执行 useState。
+const panelRoot = render({ type: panelSlot.component, props: {} })
+assert.ok(panelRoot && Array.isArray(panelRoot.children) && panelRoot.children.length >= 1, 'panel renders its root')
+const panelButton = panelRoot.children.find((el) => el && el.type === 'button' && el.props && el.props['aria-label'] === '查看沙箱授权状态')
+assert.ok(panelButton, 'the closed panel renders the icon button with its aria-label')
+
+// ── 会话 cwd 线索（宿主契约 standardProps：sessionId + useSessions）──────────
+// sessionId 是标识符不是路径，绝不能当作 sessionCwd 发送——host 会把它规范化
+// 成无效路径，current 永远回落实例工作区根（真机事故根因：面板打不开会话
+// 所在工作区）。cwd 必须经 useSessions 快照钩子读取（官方 open-in-app 同款）。
+const SESSION_CWD = 'D:\\Demo\\Workspace'
+const fetchCalls = []
+globalThis.fetch = async (url, options) => {
+  fetchCalls.push({ url: String(url), body: options && typeof options.body === 'string' ? options.body : '' })
+  return { ok: true, json: async () => ({ ok: true, value: { supported: true, current: '', workspaces: {} } }) }
+}
+// window.confirm 探针：确认交互必须留在 DOM 内（Electron 原生 confirm 关闭后
+// 不恢复输入焦点，会话输入框会点不进去——electron#31917），任何路径都不得调用。
+let nativeConfirmCalls = 0
+globalThis.window.confirm = () => { nativeConfirmCalls += 1; return false }
+const panelType = panelSlot.component
+const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
+// ① 有 cwd 的会话：打开面板，state 请求体必须携带 sessionCwd=<会话 cwd>。
+const sessionProps = (cwd) => ({
+  sessionId: 'sess-demo',
+  useSessions: (selector) => selector({ byId: { 'sess-demo': { cwd } } }),
+})
+const findButtonByAria = (node, aria) => {
+  if (Array.isArray(node)) { for (const child of node) { const hit = findButtonByAria(child, aria); if (hit) return hit } return null }
+  if (node === null || typeof node !== 'object') return null
+  if (node.type === 'button' && node.props && node.props['aria-label'] === aria) return node
+  return findButtonByAria(node.children || [], aria)
+}
+const findButtonByText = (node, text) => {
+  if (Array.isArray(node)) { for (const child of node) { const hit = findButtonByText(child, text); if (hit) return hit } return null }
+  if (node === null || typeof node !== 'object') return null
+  if (node.type === 'button' && node.props && Array.isArray(node.children)
+    && node.children.every((ch) => typeof ch === 'string') && node.children.includes(text)) return node
+  return findButtonByText(node.children || [], text)
+}
+const findByClass = (node, cls) => {
+  let hit = null
+  const walk = (n) => {
+    if (hit || n === null || typeof n !== 'object') return
+    if (Array.isArray(n)) { n.forEach(walk); return }
+    if (n.props && typeof n.props.className === 'string' && n.props.className.split(' ').includes(cls)) { hit = n; return }
+    walk(n.children || [])
+  }
+  walk(node)
+  return hit
+}
+const hasTextIn = (nodes, text) => nodes.some((n) => n.text !== undefined && n.text.includes(text))
+const cwdPanel = render({ type: panelType, props: sessionProps(SESSION_CWD) })
+const cwdIcon = cwdPanel.children.find((el) => el && el.type === 'button' && el.props && el.props['aria-label'] === '查看沙箱授权状态')
+assert.ok(cwdIcon, 'panel with session props still renders the closed icon button')
+cwdIcon.props.onClick()
+await settle()
+const stateCall = fetchCalls.find((call) => call.url.endsWith('/api/state'))
+assert.ok(stateCall, 'opening the panel fetches the state view')
+assert.deepEqual(JSON.parse(stateCall.body), { sessionCwd: SESSION_CWD }, 'state request carries the session cwd from useSessions')
+// ② 无 cwd 的会话：请求体必须是空对象（而非 sessionId 冒充路径）。
+fetchCalls.length = 0
+const noCwdPanel = render({ type: panelType, props: sessionProps('') })
+const refreshButton = findButtonByAria(noCwdPanel, '刷新授权状态')
+assert.ok(refreshButton, 'the open panel offers its refresh button')
+refreshButton.props.onClick()
+await settle()
+const bareCall = fetchCalls.find((call) => call.url.endsWith('/api/state'))
+assert.ok(bareCall, 'refresh re-fetches the state view')
+assert.deepEqual(JSON.parse(bareCall.body), {}, 'a session without cwd sends an empty body, never the session id')
+
+// ③④⑤ 面板交互契约：撤销/恢复走 DOM 内确认弹层（绝不碰原生 confirm），
+// 操作带最短展示的 busy 层，工作区只读跟随会话（未命中清单键 = 空选中 +
+// 空态，绝不串显别键），失败原因列悬浮可见完整错误。
+const grantView = {
+  supported: true,
+  current: SESSION_CWD,
+  workspaces: {
+    [SESSION_CWD]: {
+      sid: 'S-1-5-DEMO', updatedAt: '2026-10-05T00:00:00.000Z',
+      roots: [
+        { path: 'D:\\Demo\\Out', status: 'granted', grantedAt: '2026-10-05T00:00:00.000Z', excluded: false, fromPatterns: ['D:\\Demo\\Out'] },
+        { path: 'D:\\Demo\\Dead', status: 'failed', grantedAt: null, excluded: false, error: 'SetNamedSecurityInfoW failed (Win32 5)', errorAt: '2026-10-05T00:00:00.000Z', fromPatterns: ['D:\\Demo\\Dead'] },
+      ],
+      pendingRevoke: [],
+      history: [{ path: 'D:\\Demo\\Gone', revokedAt: '2026-10-05T00:00:00.000Z', origin: 'excluded', fromPatterns: ['D:\\Demo\\Gone'] }],
+    },
+  },
+}
+globalThis.fetch = async (url, options) => {
+  fetchCalls.push({ url: String(url), body: options && typeof options.body === 'string' ? options.body : '' })
+  return { ok: true, json: async () => ({ ok: true, value: grantView }) }
+}
+fetchCalls.length = 0
+const dataPanel = render({ type: panelType, props: sessionProps(SESSION_CWD) })
+const dataRefresh = findButtonByAria(dataPanel, '刷新授权状态')
+assert.ok(dataRefresh, 'the populated panel offers its refresh button')
+dataRefresh.props.onClick()
+await settle()
+// 手动刷新与操作共用 busy 层：fetch 立即返回后仍至少展示 BUSY_MIN_MS。
+const refreshBusyView = render({ type: panelType, props: sessionProps(SESSION_CWD) })
+assert.ok(hasTextIn(collect(refreshBusyView, []), '正在执行'), 'manual refresh shows the busy layer (min duration)')
+const dataView = render({ type: panelType, props: sessionProps(SESSION_CWD) })
+const dataNodes = collect(dataView, [])
+// 工作区控件 = 只读指示器：禁切换、显示会话工作区。
+const wsTrigger = findByClass(dataView, 'sabx-panel-ws-trigger')
+assert.ok(wsTrigger, 'the workspace picker renders')
+assert.equal(wsTrigger.props.disabled, true, 'workspace switching is disabled (display-only picker)')
+const wsValue = findByClass(dataView, 'sabx-panel-ws-value')
+assert.deepEqual(wsValue.children, [SESSION_CWD], 'the picker displays the session workspace')
+// 失败原因列悬浮可见完整信息（data-tip 承载未截断的 error 原文）。
+const reasonTip = dataNodes.some((n) => n.element && n.element.type === 'td'
+  && n.element.props && typeof n.element.props['data-tip'] === 'string'
+  && n.element.props['data-tip'].includes('SetNamedSecurityInfoW'))
+assert.ok(reasonTip, 'the failure reason cell exposes the full error via data-tip')
+// 工作区容器的 data-tip（disabled 触发器的提示由容器承担）。
+const pickerBox = findByClass(dataView, 'sabx-panel-ws-picker')
+assert.ok(pickerBox && pickerBox.props['data-tip'] === SESSION_CWD, 'the workspace picker carries a data-tip on its container')
+// 授权时间按本地时区渲染：存储保持 UTC ISO，展示用本地 getter 转换——旧实现
+// 直接截取 UTC 串，北京时间的机器会显示慢 8 小时的时间。
+const localTime = (iso) => {
+  const d = new Date(iso)
+  const pad = (n) => String(n).padStart(2, '0')
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+    + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds())
+}
+const timeCell = dataNodes.find((n) => n.element && n.element.type === 'td'
+  && n.element.props && n.element.props.className === 'sabx-panel-time')
+assert.ok(timeCell, 'the time cell renders')
+assert.deepEqual(timeCell.element.children, [localTime('2026-10-05T00:00:00.000Z')], 'grantedAt renders in the local timezone, not the raw UTC string')
+// ③ 撤销 → 确认弹层 → 确认后才发 revoke；全程零原生 confirm；busy 可感知。
+const revokeButton = findButtonByAria(dataView, '撤销该目录的写授权')
+assert.ok(revokeButton, 'the granted row offers the revoke action')
+revokeButton.props.onClick()
+const confirmView = render({ type: panelType, props: sessionProps(SESSION_CWD) })
+const confirmNodes = collect(confirmView, [])
+assert.ok(findByClass(confirmView, 'sabx-confirm-overlay'), 'the revoke confirm opens as a layer, not in-place buttons')
+assert.ok(hasTextIn(confirmNodes, '撤销授权'), 'the revoke confirm layer opens with its title')
+assert.ok(hasTextIn(confirmNodes, '对应的磁盘访问授权将被回收'), 'the revoke confirm layer spells out the consequence')
+assert.ok(hasTextIn(confirmNodes, '取消'), 'the confirm layer offers a cancel action')
+assert.equal(nativeConfirmCalls, 0, 'entering the revoke confirm never calls the native confirm')
+const confirmOk = findButtonByText(confirmView, '确认')
+assert.ok(confirmOk, 'the confirm layer offers the confirm action')
+fetchCalls.length = 0
+confirmOk.props.onClick()
+await settle()
+const revokeCall = fetchCalls.find((call) => call.url.endsWith('/api/revoke'))
+assert.ok(revokeCall, 'confirming issues the revoke request')
+assert.deepEqual(JSON.parse(revokeCall.body), { path: 'D:\\Demo\\Out', workspace: SESSION_CWD }, 'the revoke targets the viewed workspace slice')
+assert.equal(nativeConfirmCalls, 0, 'the whole revoke flow never calls the native confirm')
+const busyView = render({ type: panelType, props: sessionProps(SESSION_CWD) })
+assert.ok(hasTextIn(collect(busyView, []), '正在执行'), 'the busy layer stays visible after the fetch settles (min duration)')
+// ④ 恢复同样走确认弹层，确认后才发 restore。
+await new Promise((resolve) => setTimeout(resolve, 800)) // let the busy min-window elapse
+const restoredView = render({ type: panelType, props: sessionProps(SESSION_CWD) })
+const restoreButton = findButtonByAria(restoredView, '恢复该目录的写授权')
+assert.ok(restoreButton, 'the revoked row offers the restore action')
+restoreButton.props.onClick()
+const restoreConfirm = render({ type: panelType, props: sessionProps(SESSION_CWD) })
+assert.ok(hasTextIn(collect(restoreConfirm, []), '恢复授权'), 'the restore confirm layer opens with its title')
+const restoreOk = findButtonByText(restoreConfirm, '确认')
+assert.ok(restoreOk, 'the restore confirm layer offers the confirm action')
+fetchCalls.length = 0
+restoreOk.props.onClick()
+await settle()
+const restoreCall = fetchCalls.find((call) => call.url.endsWith('/api/restore'))
+assert.ok(restoreCall, 'confirming issues the restore request')
+assert.deepEqual(JSON.parse(restoreCall.body), { path: 'D:\\Demo\\Gone', workspace: SESSION_CWD }, 'the restore targets the viewed workspace slice')
+// ⑤ 会话 cwd 未命中任何清单键：选中空 + 空态，绝不默认展示别的工作区。
+const foreignView = {
+  supported: true,
+  current: 'D:\\Other\\Workspace',
+  workspaces: {
+    'D:\\Other\\Workspace': {
+      sid: null, updatedAt: null,
+      roots: [{ path: 'D:\\Other\\Stale', status: 'granted', grantedAt: '2026-10-05T00:00:00.000Z', excluded: false, fromPatterns: [] }],
+      pendingRevoke: [], history: [],
+    },
+  },
+}
+globalThis.fetch = async (url, options) => {
+  fetchCalls.push({ url: String(url), body: options && typeof options.body === 'string' ? options.body : '' })
+  return { ok: true, json: async () => ({ ok: true, value: foreignView }) }
+}
+fetchCalls.length = 0
+const foreignPanel = render({ type: panelType, props: sessionProps('D:\\Demo\\B') })
+const foreignRefresh = findButtonByAria(foreignPanel, '刷新授权状态')
+assert.ok(foreignRefresh, 'the foreign-cwd panel offers its refresh button')
+foreignRefresh.props.onClick()
+await settle()
+const foreignView2 = render({ type: panelType, props: sessionProps('D:\\Demo\\B') })
+const foreignNodes = collect(foreignView2, [])
+assert.ok(hasTextIn(foreignNodes, '当前工作区暂无授权记录'), 'an unmatched session cwd shows the empty state')
+assert.ok(!hasTextIn(foreignNodes, 'D:\\Other\\Stale'), 'no foreign workspace rows leak into the panel')
+assert.equal(findButtonByAria(foreignView2, '撤销该目录的写授权'), null, 'no actions are offered without rows')
+const foreignTrigger = findByClass(foreignView2, 'sabx-panel-ws-trigger')
+assert.equal(foreignTrigger.props.disabled, true, 'the picker stays disabled on the empty selection')
+const foreignValue = findByClass(foreignView2, 'sabx-panel-ws-value')
+assert.deepEqual(foreignValue.children, ['D:\\Demo\\B'], 'the empty panel still shows which workspace it is looking at')
 
 // Plugins 页配置界面：bundle.config 按包名作 key，row.config 按「包名#行id」。
 // page 视图渲染与设置页同一份分节；summary 视图给一行说明文字。
@@ -338,6 +556,13 @@ for (const marker of [
   'cmds.baselineLabel',
   'cmds.sessionLabel',
   'baselineOptions',
+  // 会话 cwd 契约读法、DOM 内确认弹层/busy 层、本地时间渲染与 body 级自绘
+  // 悬浮气泡（两个文件必须同步演进）。
+  'useSessions',
+  'sabx-confirm-overlay',
+  'sabx-busy-spin',
+  'localTimeText',
+  'sabx-tip',
 ]) {
   assert.ok(source.includes(marker), `lib/client.js carries the marker: ${marker}`)
   assert.ok(tsx.includes(marker), `src/client/index.tsx carries the marker: ${marker}`)
@@ -395,6 +620,7 @@ for (const [label, configForms] of [
     },
   }
   captured.apply(failedCtx)
+  await flushRegistration()
   failedInjected.forEach((fn) => fn())
   assert.ok(failedRegistered.length >= 1, `${label}: section still registers`)
   const sectionEntry = failedRegistered.find((r) => r.spec.name === 'settings.section')
@@ -406,5 +632,29 @@ for (const [label, configForms] of [
     `${label}: renders the read-only notice`,
   )
 }
+
+// 入口按平台注册：host 半件不在非 win32 挂状态路由（探测 404 / 非 JSON）⇒
+// 会话入口完全不注册，其余槽位不受影响——这是「Windows 才有入口」的契约本体。
+globalThis.fetch = async () => ({ ok: false, status: 404, json: async () => { throw new Error('not json') } })
+const linuxRegistered = []
+const linuxInjected = []
+captured.apply({
+  configForms: { get: () => null },
+  locale,
+  effect: effectStub,
+  slots: {
+    inject(name, fn) { linuxInjected.push(fn) },
+    register(spec, component) { linuxRegistered.push({ spec, component }); return { spec, component } },
+  },
+  connection: undefined,
+})
+await flushRegistration()
+linuxInjected.forEach((fn) => fn())
+assert.equal(
+  linuxRegistered.find((r) => r.spec.name === 'conversation.session.header.utilities'),
+  undefined,
+  'no session entry registers on a host without the state route',
+)
+assert.ok(linuxRegistered.some((r) => r.spec.name === 'settings.section'), 'settings section still registers without the panel')
 
 console.log('verify-client-editor: all checks passed')

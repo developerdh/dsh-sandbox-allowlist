@@ -10,6 +10,12 @@
  * running dsh (e.g. after uninstalling the plugin, or for directories the
  * auto-reclaim could not reach).
  *
+ * To DISCOVER what needs cleaning — including residues nothing accounts for
+ * (ki-2: standing ACEs with no manifest record, e.g. from older versions or
+ * a lost manifest) — prefer `verify-ace.mjs scan`, which finds workspace-SID
+ * ACEs by SID recomputation or DACL shape matching without needing this
+ * script's workspace-root argument.
+ *
  * Usage:
  *   node revoke.mjs <workspaceRoot> <dir> [<dir> ...]
  *

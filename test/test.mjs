@@ -12,6 +12,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -61,13 +62,30 @@ import {
   resolvePowerShell,
 } from '../lib/acl-revoke.mjs'
 import {
+  writeSidForDirectory,
+  parseDaclHits,
+} from '../lib/acl-scan.mjs'
+import {
   MANIFEST_FILE_NAME,
+  MANIFEST_VERSION,
+  HISTORY_LIMIT,
   manifestPath,
   loadManifest,
   saveManifest,
-  workspaceGrants,
-  setWorkspaceGrants,
-  diffGranted,
+  emptyWorkspaceRecord,
+  emptyRootEntry,
+  workspaceRecord,
+  rootEntryAt,
+  ensureRootEntry,
+  removeRootEntry,
+  activeEntries,
+  isExcludedPath,
+  diffGrantedV2,
+  refreshFromPatterns,
+  pushHistory,
+  moveRootToHistory,
+  enterPendingRevoke,
+  dropPendingRevoke,
 } from '../lib/grant-manifest.mjs'
 import AllowlistPolicyService, { SETTINGS_ENTRY_ID, AllowlistSettingsSchema, CommandRuleSchema, CommandSettingsSchema } from '../lib/policy.mjs'
 import AllowlistFileSystem from '../lib/fs.mjs'
@@ -198,48 +216,140 @@ assert.match(denyReason('bash', 'rm -rf /'), /deny rule/)
     }
   }
 
-  // ── grants manifest ───────────────────────────────────────────────────────
+  // ── grants manifest v2（v1 迁移 / 记账字段 / 往返） ───────────────────────
   {
     const manifestBase = mkdtempSync(join(tmpdir(), 'dsh-grants-man-'))
     try {
-      // missing file → empty; corrupt file → empty, never throws
-      const missing = manifestPath(manifestBase)
-      assert.deepEqual(loadManifest(missing), { workspaces: {} })
-      writeFileSync(missing, '{oops', 'utf8')
-      assert.deepEqual(loadManifest(missing), { workspaces: {} })
+      const file = manifestPath(manifestBase)
+      // missing file → empty v2; corrupt file → empty v2, never throws
+      assert.deepEqual(loadManifest(file), { version: MANIFEST_VERSION, workspaces: {} })
+      writeFileSync(file, '{oops', 'utf8')
+      assert.deepEqual(loadManifest(file), { version: MANIFEST_VERSION, workspaces: {} })
 
-      // round-trip: save → load → per-workspace get/set
-      const manifest = { workspaces: {} }
-      setWorkspaceGrants(manifest, 'W:\\work', ['D:\\Shared\\Tools', 'D:\\Data\\logs'])
-      saveManifest(missing, manifest)
-      const loaded = loadManifest(missing)
-      assert.deepEqual(workspaceGrants(loaded, 'W:\\work'), ['D:\\Shared\\Tools', 'D:\\Data\\logs'])
-      assert.deepEqual(workspaceGrants(loaded, 'W:\\other'), [])
-      assert.equal(loaded.workspaces['W:\\work'].length, 2)
+      // v1 → v2 migration: bare string lists wrap as granted records and ask
+      // for a write-back
+      writeFileSync(file, JSON.stringify({ workspaces: { 'W:\\work': ['D:\\Shared\\Tools', 'D:\\Data\\logs'] } }), 'utf8')
+      const migrated = loadManifest(file)
+      assert.equal(migrated.version, MANIFEST_VERSION)
+      assert.equal(migrated.needsWriteBack, true)
+      const migratedRecord = migrated.workspaces['W:\\work']
+      assert.deepEqual(migratedRecord.roots.map((entry) => entry.path), ['D:\\Shared\\Tools', 'D:\\Data\\logs'])
+      assert.ok(
+        migratedRecord.roots.every((entry) => entry.status === 'granted' && entry.excluded === false && Array.isArray(entry.fromPatterns)),
+        'v1 roots wrap as granted, unexcluded records with a fromPatterns list',
+      )
+      assert.deepEqual(migratedRecord.pendingRevoke, [])
+      assert.deepEqual(migratedRecord.history, [])
+      saveManifest(file, migrated)
+      assert.equal(loadManifest(file).needsWriteBack, undefined) // written back in v2
+
+      // round-trip: a full v2 record (roots + pendingRevoke + history) survives
+      const manifest = { version: MANIFEST_VERSION, workspaces: {} }
+      const record = workspaceRecord(manifest, 'W:\\work')
+      record.sid = 'S-1-4-1-2'
+      const entry = ensureRootEntry(record, 'D:\\Shared\\Tools')
+      entry.grantedAt = '2026-10-04T00:00:00.000Z'
+      entry.fromPatterns = ['D:\\Shared\\**']
+      enterPendingRevoke(record, { path: 'D:\\Gone', origin: 'excluded', error: 'boom' })
+      pushHistory(record, { path: 'D:\\Old', origin: 'config-removed' })
+      saveManifest(file, manifest)
+      const loaded = loadManifest(file)
       assert.equal(MANIFEST_FILE_NAME, 'sandbox-allowlist-grants.json')
+      assert.equal(loaded.workspaces['W:\\work'].sid, 'S-1-4-1-2')
+      assert.equal(
+        rootEntryAt(loaded.workspaces['W:\\work'], 'd:\\shared\\tools').grantedAt,
+        '2026-10-04T00:00:00.000Z',
+        'root lookup is separator/case-insensitive',
+      )
+      assert.equal(loaded.workspaces['W:\\work'].pendingRevoke[0].origin, 'excluded')
+      assert.equal(loaded.workspaces['W:\\work'].history[0].path, 'D:\\Old')
+
+      // accounting: only granted && !excluded entries count as carrying the ACE
+      const book = emptyWorkspaceRecord()
+      ensureRootEntry(book, 'D:\\A') // default status: granted
+      ensureRootEntry(book, 'D:\\B').status = 'failed'
+      const excludedEntry = ensureRootEntry(book, 'D:\\C')
+      excludedEntry.status = 'granted'
+      excludedEntry.excluded = true
+      assert.deepEqual(activeEntries(book).map((active) => active.path), ['D:\\A'])
+      assert.deepEqual(emptyRootEntry('D:\\X'), {
+        path: 'D:\\X', status: 'granted', grantedAt: null, fromPatterns: [], triggeredBy: '',
+        excluded: false, error: null, errorAt: null, attempts: 0,
+      })
     } finally {
       rmSync(manifestBase, { recursive: true, force: true })
     }
   }
 
-  // ── granted × wanted diff ─────────────────────────────────────────────────
+  // ── granted × wanted diff（排除感知，父先序） ─────────────────────────────
   {
-    const plain = diffGranted(['a', 'b'], ['b', 'c'])
-    assert.deepEqual(plain.toAdd, ['c'])
-    assert.deepEqual(plain.toRemove, ['a'])
+    const record = emptyWorkspaceRecord()
+    ensureRootEntry(record, 'D:\\x').status = 'granted'
+    ensureRootEntry(record, 'D:\\x\\b').status = 'granted'
+    const excludedRoot = ensureRootEntry(record, 'D:\\ex') // excluded: revoked however much patterns cover it
+    excludedRoot.status = 'granted'
+    excludedRoot.excluded = true
+    ensureRootEntry(record, 'D:\\fail').status = 'failed' // not in the skip-set → retried
+
+    const plain = diffGrantedV2(record, ['D:\\x', 'D:\\x\\b', 'D:\\new', 'D:\\ex', 'D:\\fail'])
+    assert.deepEqual(plain.toAdd.sort(), ['D:\\fail', 'D:\\new'], 'excluded never re-adds; failed retries')
+    assert.deepEqual(plain.toRemove, ['D:\\ex'], 'only the excluded still-granted root is revoked here')
 
     // parents are reclaimed before children (a child must never re-inherit
     // from a batch root that is being reclaimed in the same run)
-    const nested = diffGranted(['D:\\x\\b', 'D:\\x'], [])
-    assert.deepEqual(nested.toRemove, ['D:\\x', 'D:\\x\\b'])
+    const nested = emptyWorkspaceRecord()
+    ensureRootEntry(nested, 'D:\\x').status = 'granted'
+    ensureRootEntry(nested, 'D:\\x\\b').status = 'granted'
+    assert.deepEqual(diffGrantedV2(nested, []).toRemove, ['D:\\x', 'D:\\x\\b'])
 
-    // duplicate wanted roots collapse
-    assert.deepEqual(diffGranted([], ['a', 'a']).toAdd, ['a'])
+    // history-excluded membership: a completed exclusion still blocks re-adding
+    const revoked = emptyWorkspaceRecord()
+    pushHistory(revoked, { path: 'D:\\gone', origin: 'excluded' })
+    assert.deepEqual(diffGrantedV2(revoked, ['D:\\gone']).toAdd, [])
+    assert.equal(isExcludedPath(revoked, 'D:\\GONE'), true)
 
-    // identical sets → no work
-    const same = diffGranted(['a', 'b'], ['b', 'a'])
+    // duplicate wanted roots collapse; identical sets → no work
+    assert.deepEqual(diffGrantedV2(emptyWorkspaceRecord(), ['a', 'a']).toAdd, ['a'])
+    const same = diffGrantedV2(emptyWorkspaceRecord(), [])
     assert.deepEqual(same.toAdd, [])
     assert.deepEqual(same.toRemove, [])
+  }
+
+  // ── history FIFO 封顶 + pendingRevoke 单条约束 ────────────────────────────
+  {
+    const record = emptyWorkspaceRecord()
+    for (let i = 0; i < HISTORY_LIMIT + 5; i += 1) {
+      pushHistory(record, { path: `D:\\h${i}`, origin: 'config-removed', revokedAt: `t${i}` })
+    }
+    assert.equal(record.history.length, HISTORY_LIMIT)
+    assert.equal(record.history[0].path, 'D:\\h5', 'oldest dropped first, order kept')
+    assert.equal(record.history.at(-1).path, `D:\\h${HISTORY_LIMIT + 4}`)
+
+    const book = emptyWorkspaceRecord()
+    enterPendingRevoke(book, { path: 'D:\\a', origin: 'config-removed', error: 'e1' })
+    enterPendingRevoke(book, { path: 'D:\\a', origin: 'excluded', error: 'e2' })
+    assert.equal(book.pendingRevoke.length, 1, 'one pendingRevoke entry per path')
+    assert.equal(book.pendingRevoke[0].origin, 'excluded')
+    assert.equal(dropPendingRevoke(book, 'd:\\A'), true)
+    assert.equal(book.pendingRevoke.length, 0)
+  }
+
+  // ── fromPatterns 审计镜像 + 入史/剔除原语 ─────────────────────────────────
+  {
+    const record = emptyWorkspaceRecord()
+    ensureRootEntry(record, 'D:\\Shared\\Tools')
+    enterPendingRevoke(record, { path: 'D:\\Shared\\Old', origin: 'config-removed' })
+    refreshFromPatterns(record, [
+      { pattern: 'D:\\Shared\\**', roots: ['D:\\Shared', 'D:\\Shared\\Tools'] },
+      { pattern: 'D:\\Other\\*', roots: [] },
+    ])
+    assert.deepEqual(rootEntryAt(record, 'D:\\Shared\\Tools').fromPatterns, ['D:\\Shared\\**'])
+    assert.deepEqual(record.pendingRevoke[0].fromPatterns, [], 'only actual coverage counts')
+
+    assert.equal(moveRootToHistory(record, 'D:\\Shared\\Tools', 'excluded', 't0'), true)
+    assert.equal(rootEntryAt(record, 'D:\\Shared\\Tools'), undefined)
+    assert.deepEqual(record.history[0], { path: 'D:\\Shared\\Tools', revokedAt: 't0', origin: 'excluded', fromPatterns: ['D:\\Shared\\**'] })
+    assert.equal(removeRootEntry(record, 'D:\\missing'), false)
   }
 
   // ── revoke dir collection (parents first, symlinks never followed) ────────
@@ -256,6 +366,38 @@ assert.match(denyReason('bash', 'rm -rf /'), /deny rule/)
     } finally {
       rmSync(treeBase, { recursive: true, force: true })
     }
+  }
+
+  // ── SID 工具（路径重算 / SDDL 形状提取，ki-2 scan 的识别基元） ─────────────
+  {
+    const dirBase = mkdtempSync(join(tmpdir(), 'dsh-scan-sid-'))
+    try {
+      const dir = join(dirBase, 'ws')
+      mkdirSync(dir, { recursive: true })
+      // 路径重算与官方派生一致（sha256 of canonical path），拼写大小写收敛
+      const digest = createHash('sha256').update(realpathSync.native(dir), 'utf8').digest()
+      const expected = `S-1-4-${digest.readUInt32LE(0) % (2 ** 30 - 1) + 1}-${digest.readUInt32LE(4) % (2 ** 30 - 1) + 1}`
+      assert.equal(writeSidForDirectory(dir), expected)
+      const flipped = dir.replace(/[a-z]/, (ch) => ch.toUpperCase())
+      assert.equal(writeSidForDirectory(flipped), expected, 'canonicalization folds case/alias spellings')
+      assert.notEqual(writeSidForDirectory(join(dirBase, 'other')), expected, 'another workspace derives another SID')
+      // 目录不存在也能重算（工作区已删除的残留识别场景）
+      assert.equal(writeSidForDirectory(join(dirBase, 'gone')), writeSidForDirectory(join(dirBase, 'gone')))
+    } finally {
+      rmSync(dirBase, { recursive: true, force: true })
+    }
+
+    const sddl = 'D:P(A;OICI;W;;;S-1-4-123-456)(A;ID;W;;;S-1-4-987-654)(A;OICI;W;;;S-1-4-111-222-1)(A;;FA;;;S-1-5-18)'
+    assert.deepEqual(parseDaclHits(sddl), [
+      { sid: 'S-1-4-123-456', inherited: false },
+      { sid: 'S-1-4-987-654', inherited: true },
+    ], 'workspace shape hits: explicit + inherited copy; temp SID (-1 third subauthority) and S-1-5-18 excluded')
+    assert.deepEqual(parseDaclHits(sddl, 'S-1-4-987-654'), [{ sid: 'S-1-4-987-654', inherited: true }], 'exact-sid filter')
+    assert.deepEqual(parseDaclHits('D:P(A;OICI;W;;;S-1-4-123-456)(A;ID;W;;;S-1-4-123-456)'), [
+      { sid: 'S-1-4-123-456', inherited: false },
+      { sid: 'S-1-4-123-456', inherited: true },
+    ], 'same sid explicit + inherited copy stay distinct entries')
+    assert.deepEqual(parseDaclHits('O:SYG:SYD:PAI(A;;FA;;;BA)'), [], 'no allow ACE → no hits')
   }
 
   // ── filesystem expansion ───────────────────────────────────────────────────
