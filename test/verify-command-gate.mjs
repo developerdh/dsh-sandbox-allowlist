@@ -180,13 +180,10 @@ assert.equal(calls.downstream, 3, 'mixed allow/unknown line reaches the downstre
   let liveFiber = liveCtx.plugin(PolicyPlugin, {
     mode: 'workspace-write',
     workspaceRoot: WORKSPACE,
-    commands: { default: 'delegate', sessionCache: true, rules: [] },
+    commands: { default: 'delegate', baseline: true, rules: [] },
   })
   await liveFiber
-  const cache = liveCtx.sandboxPolicy._sessionCache
-  assert.equal(cache.enabled, true, 'the cache starts enabled (config default)')
-  cache.remember('bash', 'acme-tool build')
-  assert.ok(cache.lookup('bash', 'acme-tool build') !== null, 'a hand-approved command is remembered')
+  assert.equal(liveCtx.sandboxPolicy._currentCommands().baseline, true, 'the baseline starts enabled (config default)')
   assert.equal(liveSections.size, 3, 'the first mount owns three prompt sections')
 
   await liveFiber.dispose()
@@ -196,13 +193,10 @@ assert.equal(calls.downstream, 3, 'mixed allow/unknown line reaches the downstre
   liveFiber = liveCtx.plugin(PolicyPlugin, {
     mode: 'workspace-write',
     workspaceRoot: WORKSPACE,
-    commands: { default: 'delegate', sessionCache: false, rules: [] },
+    commands: { default: 'delegate', baseline: false, rules: [] },
   })
   await liveFiber
-  const reloaded = liveCtx.sandboxPolicy._sessionCache
-  assert.notEqual(reloaded, cache, 'the reload builds a fresh instance')
-  assert.equal(reloaded.enabled, false, 'the reloaded instance honors the new sessionCache:false')
-  assert.equal(reloaded.lookup('bash', 'acme-tool build'), null, 'the fresh cache carries no previous session memory')
+  assert.equal(liveCtx.sandboxPolicy._currentCommands().baseline, false, 'the re-applied instance reads the NEW config (baseline: false)')
   assert.equal(liveSections.size, 3, 'the second mount registers its own prompt sections without a duplicate error')
 
   await liveFiber.dispose()

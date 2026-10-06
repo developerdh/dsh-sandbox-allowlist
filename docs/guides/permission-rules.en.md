@@ -108,9 +108,8 @@ why a PowerShell pipeline does not require enumerating every cmdlet.
 sandbox-allowlist:
   commands:
     default: delegate        # when no rule matches: delegate=keep current behaviour (default) | allow | ask | deny
-    escalation: capability   # auto-approve sandbox escalation: capability (default) | never
+    escalation: capability   # auto-approve sandbox escalations (experimental): capability (default) | never
     baseline: true           # built-in capability baseline (on by default)
-    sessionCache: true       # session-scoped command cache (on by default)
     rules:                   # evaluated in declaration order; the last match wins
       - tool: bash           # optional: bash / pwsh; omitted = both apply
         pattern: 'git status*'
@@ -167,16 +166,24 @@ sandbox-allowlist:
   rules.
 
 ### Built-in capability baseline (`baseline`)
-When enabled (the default), read-only commands
-(`ls`/`cat`/`grep`/`git status`/`Get-ChildItem`/`Where-Object`…) and commands that "only write
-inside the workspace/authorized directories" are recognised **without any rule**. Turn it off
-and only your rules decide.
+When enabled (the default), the engine ships with a built-in list of "safe commands": read-only
+commands (`ls`/`cat`/`grep`/`git status`/`Get-ChildItem`/`Where-Object`…) and commands that write
+only inside the workspace/authorized directories run **without any rule and without a prompt**;
+with `escalation: capability` (the default), escalation requests for such commands are
+auto-approved too. Turn it off and there is no such list: only your rules decide, and unmatched
+commands fall back to `default`.
 
-### Auto-approve sandbox escalation (`escalation`)
+### Auto-approve sandbox escalation (`escalation`, experimental)
+
+A "sandbox escalation" is the approval request raised after the sandbox refused a command
+and the AI retries it with `sandbox_permissions`, so the command would run outside the
+sandbox. Such requests require manual confirmation every time by default; this switch
+controls which of them may be **auto-approved** (no prompt):
+
 | Value | Meaning |
 |---|---|
-| `capability` (default) | every individual command matches an `allow` rule (**an allow carries escalation authorization**), or all are benign capability classes (read-only, or writing only inside the workspace/authorized directories) ⇒ auto-approved; everything else (interpreters, network, package managers, unknown programs, unparsable structures) prompts |
-| `never` | never auto-approve |
+| `capability` (default) | every individual command matches an `allow` rule (**an allow carries escalation authorization**), or all are benign capability classes (read-only, or writing only inside the workspace/authorized directories) ⇒ auto-approved; everything else (interpreters, network, package managers, unknown programs, unparsable structures) still prompts |
+| `never` | never auto-approve; every escalation prompts |
 
 Three hard constraints (**no rule can override them**; they always apply regardless of
 configuration):
@@ -211,10 +218,6 @@ official review gate; a missing preset service or a failed probe counts as non-A
 keeps current behavior). Authorized directories and read restrictions are unaffected: an
 Auto session has no sandbox (out-of-workspace writes pass by design), and read restrictions
 anchor to the deployment's default mode and keep applying.
-
-### Session-scoped command cache (`sessionCache`)
-A command you approved by hand (**the exact same command text**) is not asked again in this
-session; any change to its arguments counts as a different command.
 
 ### Decision trail and rule proposals
 - Every decision is appended to `$DSH_HOME/sandbox-allowlist-decisions.jsonl` (verdict,
@@ -465,7 +468,7 @@ restrictions no longer apply — consistent with the write sandbox.
 | An authorized directory and a read restriction both match? | They are orthogonal: allowedDirs governs writing, noRead governs reading, and they may point at the same directory (combined example 10) |
 | I configured rules, so why is it still prompting? | Look at the `[sandbox-allowlist]` part of the prompt: it states **why it was not auto-approved** (which individual command, its capability class, whether it is out of bounds or read-denied); the same part also suggests a rule you could add |
 | How do I see what the engine actually decided? | Every decision is appended to `$DSH_HOME/sandbox-allowlist-decisions.jsonl` (verdict / reason / per-command capability class / whether it may escalate) |
-| Why am I asked about the same command repeatedly? | After you approve it once by hand it is not asked again this session (`sessionCache`, on by default); for a long-term allowance, look at the candidate rules in `$DSH_HOME/sandbox-allowlist-proposals.json` |
+| Why am I asked about the same command repeatedly? | Turn it into a narrow rule (`git status*` → allow); commands you keep approving by hand also accumulate as candidate rules in `$DSH_HOME/sandbox-allowlist-proposals.json`, ready to copy |
 | I want to allow `git status` but stop `git push`? | Use two narrow pattern rules: `git status*` → allow written first, `git push*` → ask written after; rules are "the last match wins", so put finer rules later |
 
 Companion documents: the [README](../../README.md) (installation / quick start),

@@ -36,14 +36,13 @@ import {
 import {
   describeStatement,
 } from '../lib/command-rules.mjs'
-import { decide, makeScopePredicate, canonicalCommandKey } from '../lib/command-decision.mjs'
+import { decide, makeScopePredicate } from '../lib/command-decision.mjs'
 import { classifyStatement, capabilityTables } from '../lib/command-classes.mjs'
 import { analyzeCommand } from '../lib/command-analyze.mjs'
 import { makeScriptExpander, scriptNameOf } from '../lib/command-expand.mjs'
 import {
   CommandAudit,
   ProposalStore,
-  SessionDecisionCache,
   describeProposal,
   explainDecision,
 } from '../lib/command-audit.mjs'
@@ -894,14 +893,9 @@ try {
     const explained = explainDecision(denyWins)
     assert.match(explained, /判定：deny/, 'explainDecision renders the verdict')
     assert.match(explained, /rm -rf \.\/x/, 'and the per-statement breakdown')
-
-    assert.equal(canonicalCommandKey('  git   push  origin '), canonicalCommandKey('git push origin'), 'canonical key collapses whitespace and quotes')
-    // 回归（H3）：引号是结构——无元字符的引号 span 只是拼法，带操作符的 span 改变命令
-    assert.equal(canonicalCommandKey('git "status"'), canonicalCommandKey('git status'), 'a plain quoted word shares one key')
-    assert.notEqual(canonicalCommandKey('rm "a;b"'), canonicalCommandKey('rm a;b'), 'quoted ; and statement separator ; never collide')
   }
 
-  // ── audit / session cache / proposals ─────────────────────────────────────
+  // ── audit / proposals ─────────────────────────────────────────────────────
   {
     const audit = new CommandAudit({ cap: 2, file: join(base, 'decisions.jsonl') })
     audit.record({ phase: 'sandbox', tool: 'bash', command: 'a', verdict: 'allow' })
@@ -923,16 +917,6 @@ try {
       'the live sink is bounded (a rotation happens once per maxBytes)',
     )
     assert.ok(!existsSync(join(base, 'rotate.jsonl.3')), 'rotated files beyond maxFiles are dropped')
-
-    const cache = new SessionDecisionCache({ cap: 2 })
-    assert.equal(cache.lookup('bash', 'git  push'), null, 'nothing remembered yet')
-    cache.remember('bash', 'git push', { phase: 'escalation' })
-    assert.ok(cache.lookup('bash', 'git   push') !== null, 'whitespace-only variants share the canonical key')
-    assert.equal(cache.lookup('bash', 'git push --force'), null, 'a changed argument is a different command')
-    assert.equal(cache.lookup('pwsh', 'git push'), null, 'the tool is part of the key')
-    cache.remember('bash', 'a'); cache.remember('bash', 'b'); cache.remember('bash', 'c')
-    assert.equal(cache.size, 2, 'the cache is bounded (FIFO)')
-    assert.equal(new SessionDecisionCache({ enabled: false }).remember('bash', 'x'), false, 'a disabled cache stores nothing')
 
     const proposals = new ProposalStore({ threshold: 2 })
     assert.equal(proposals.note({ tool: 'bash', program: 'cargo', rest: 'fmt', kind: 'opaque', phase: 'escalation' }), null, 'below threshold: no proposal yet')

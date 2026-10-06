@@ -87,9 +87,8 @@ dsh 的 bash / pwsh 工具执行命令前可能弹审批；命令被沙箱拒绝
 sandbox-allowlist:
   commands:
     default: delegate        # 未命中规则时：delegate=维持现状（默认）| allow | ask | deny
-    escalation: capability   # 沙箱升级自动放行：capability（默认）| never
+    escalation: capability   # 沙箱升级自动放行（实验性）：capability（默认）| never
     baseline: true           # 内置能力基线（默认开）
-    sessionCache: true       # 会话级命令缓存（默认开）
     rules:                   # 按声明顺序求值，最后一条命中的生效
       - tool: bash           # 可选：bash / pwsh；省略 = 两种都生效
         pattern: 'git status*'
@@ -137,14 +136,21 @@ sandbox-allowlist:
 - 规则只管 **bash / pwsh 两个 shell 工具**，其它工具与命令规则无关。
 
 ### 内置能力基线（`baseline`）
-开启时（默认），只读命令（`ls`/`cat`/`grep`/`git status`/`Get-ChildItem`/`Where-Object`…）
-与"只写工作区/授权目录内路径"的命令**无需任何规则**即可识别。关掉则完全按规则判定。
+开启时（默认），引擎内置一份「安全命令」清单：只读命令（`ls`/`cat`/`grep`/`git status`/
+`Get-ChildItem`/`Where-Object`…）与只在工作区/授权目录内写入的命令，**不需要写任何规则**
+就免审批运行；`escalation: capability`（默认）时，这类命令的升级请求也会自动批准。
+关掉则没有这份清单：一切按规则判定，未命中规则的命令按 `default` 处理。
 
-### 沙箱升级自动放行（`escalation`）
+### 沙箱升级自动放行（`escalation`，实验性）
+
+「沙箱升级」指命令被沙箱拒绝后，AI 携带 `sandbox_permissions` 重试、使命令脱离
+沙箱约束运行的那次审批。这类请求默认每次都需要人工确认；本开关决定其中可以
+**自动批准**（不再弹窗）的范围：
+
 | 值 | 含义 |
 |---|---|
-| `capability`（默认） | 每条独立命令都命中 `allow` 规则（**allow 自带升级授权**），或都是良性能力类（只读、或只写工作区/授权目录内路径）⇒ 自动放行；其余（解释器、网络、包管理器、未知程序、解析不了的结构）弹审批 |
-| `never` | 永不自动放行 |
+| `capability`（默认） | 每条独立命令都命中 `allow` 规则（**allow 自带升级授权**），或都是良性能力类（只读、或只写工作区/授权目录内路径）⇒ 自动批准；其余（解释器、网络、包管理器、未知程序、解析不了的结构）仍弹审批 |
+| `never` | 永不自动批准，所有升级一律弹审批 |
 
 三条硬约束（**任何规则都覆盖不了**，与配置无关永远生效）：
 1. 命令引用了 **noRead 禁读目标**时绝不自动放行——升级会一并解除读取限制，
@@ -169,10 +175,6 @@ Auto 会话无沙箱（工作区外写天然放行），禁读锚定部署默认
 **元程序展开**：`pnpm run <script>` / `pnpm <script>` 会读工作区 `package.json` 的
 脚本文本（含 `pre`/`post` 钩子）按真实内容判定。读不到清单时保持保守。注意：若容器
 命令本身命中了 `allow` 规则，该授权会覆盖展开后的脚本体（宽规则的代价）。
-
-### 会话级命令缓存（`sessionCache`）
-你手工批准过的某条命令（**完全相同的命令文本**）在本会话内不再重复询问；参数
-有任何变化都算另一条命令。
 
 ### 决策轨迹与规则提案
 - 每次判定记入 `$DSH_HOME/sandbox-allowlist-decisions.jsonl`（判定、原因、每条
@@ -398,7 +400,7 @@ sandbox-allowlist:
 | 授权目录与禁读规则同时命中？ | 两者正交：allowedDirs 管写、noRead 管读，可指向同一目录（组合示例 10） |
 | 我配了规则，为什么还是弹审批？ | 看弹窗里 `[sandbox-allowlist]` 那段：它写明**为什么没自动放行**（哪条独立命令、能力类是什么、是否越界/命中禁读）；同一段还会给出可添加的规则 |
 | 怎么知道引擎实际判了什么？ | 每次判定都追加到 `$DSH_HOME/sandbox-allowlist-decisions.jsonl`（判定/原因/逐条能力类/是否可升级） |
-| 老是被同一条命令问？ | 手工批准一次后本会话不再问（`sessionCache`，默认开）；想长期免问就看 `$DSH_HOME/sandbox-allowlist-proposals.json` 里的候选规则 |
+| 老是被同一条命令问？ | 把它配成窄规则（`git status*` → allow）；反复手工批准的命令形状也会累计成 `$DSH_HOME/sandbox-allowlist-proposals.json` 里的候选规则，照抄即可 |
 | 想放行 `git status` 但拦住 `git push`？ | 用两条窄 pattern 规则：`git status*` → allow 写前面，`git push*` → ask 写后面；规则是"最后一条命中生效"，更细的放后面 |
 
 配套文档：[README](../../README.md)（安装/快速开始）、[架构与安全边界](architecture.md)（工作原理/安全边界/已知限制）、[开发与测试](../development.md)（测试/构建/内部契约）。

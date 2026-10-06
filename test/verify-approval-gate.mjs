@@ -255,7 +255,6 @@ const e2eCommands = {
   default: 'delegate',
   escalation: 'capability',
   baseline: true,
-  sessionCache: true,
   rules: e2eRules,
 }
 // dsh 0.2.0: the rules live in this row's Config; the settings form projects
@@ -317,12 +316,13 @@ assert.equal(
   'non-escalation reason delegates',
 )
 
-// a manual approval is remembered for the session: the same command is not asked twice
+// a manual approval is NOT remembered across calls: every escalation prompts
+// (the session-level command cache was removed on purpose — see the guide)
 const repeat = 'node scripts/verify.mjs --fix'
 await dispatchPre('bash', 'call-6a', repeat)
 assert.equal(await dispatchApproval(escalation('call-6a', 'bash'), 'allowed-once'), 'allowed-once', 'the user approves by hand')
 await dispatchPre('bash', 'call-6b', repeat)
-assert.equal(await dispatchApproval(escalation('call-6b', 'bash')), 'allowed-once', 'the same command is auto-approved for the rest of the session')
+assert.equal(await dispatchApproval(escalation('call-6b', 'bash')), 'unavailable', 'the very same command prompts again — no session memory')
 
 // repeating hand approvals produce a rule proposal (never applied automatically)
 await dispatchPre('bash', 'call-7a', 'cargo fmt')

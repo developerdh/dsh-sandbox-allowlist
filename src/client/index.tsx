@@ -15,7 +15,7 @@
  *   - 命令规则：默认动作分段选择（选中项 = 语义色浅底 + 语义色文字 + 粗体 +
  *     内描边）；规则行 = 自绘工具下拉 + 命令模式输入 + 紧凑 allow/ask/deny
  *     分段 + 小 ✕ 图标按钮；三个开关收敛为一个可见勾选框（允许沙箱升级自动
- *     放行）+ 默认收起的「高级」区（内置能力基线 / 会话级命令缓存）；
+ *     放行）+ 默认收起的「高级」区（内置能力基线）；
  *   - 禁读规则：与命令规则同款规则表，但动作只提供 deny/ask 两档（官方默认
  *     本就允许读，不提供 allow），pattern 输入 + 紧凑 deny/ask 分段 + 小 ✕；
  *   - 工具下拉为自绘组件（原生 <select> 展开态无法定制样式）；选项仅
@@ -97,7 +97,6 @@ const ACTION_OPTIONS = [
 /** 「高级」折叠区里的布尔开关（勾选框定义）。 */
 const BASELINE_OPTIONS = [
   { key: 'baseline', labelKey: 'cmds.baselineLabel', hintKey: 'cmds.baselineHint' },
-  { key: 'sessionCache', labelKey: 'cmds.sessionLabel', hintKey: 'cmds.sessionHint' },
 ]
 
 /** 禁读规则动作：只提供 deny / ask（allow 与默认行为无异，刻意不提供）。 */
@@ -120,7 +119,7 @@ function toolOptions(t: Translate) {
   }))
 }
 
-/** 「高级」折叠区的两个布尔开关（标签与说明均为词典键）。 */
+/** 「高级」折叠区的布尔开关（标签与说明均为词典键）。 */
 function baselineOptions(t: Translate) {
   return BASELINE_OPTIONS.map((option) => ({ key: option.key, label: t(option.labelKey), hint: t(option.hintKey) }))
 }
@@ -282,9 +281,8 @@ export function currentCommands(form: FormController | null): {
   rules: SavedCommandRule[]
   escalation: string
   baseline: boolean
-  sessionCache: boolean
 } {
-  const fallback = { default: 'delegate', rules: [] as SavedCommandRule[], escalation: 'capability', baseline: true, sessionCache: true }
+  const fallback = { default: 'delegate', rules: [] as SavedCommandRule[], escalation: 'capability', baseline: true }
   const value = formSnapshot(form).value
   const commands = value && value.commands
   if (!commands) return fallback
@@ -300,7 +298,6 @@ export function currentCommands(form: FormController | null): {
     rules,
     escalation: commands.escalation !== undefined ? commands.escalation : 'capability',
     baseline: commands.baseline !== false,
-    sessionCache: commands.sessionCache !== false,
   }
 }
 
@@ -348,39 +345,47 @@ export type CommandRuleRow = SavedCommandRule & { id: number }
 /** 禁读规则表一行的草稿。 */
 export type NoReadRuleRow = SavedNoReadRule & { id: number }
 
-/** 未保存改动计数：与已保存值逐条位置比较。 */
+/** 未保存改动计数：与已保存值逐条位置比较（比较到两列表较长一方，删除行
+ * 形成的尾部差异也计入——只循环到 rows.length 会漏掉删除最后一行的情况）。 */
 function dirsDirtyCount(rows: { value: string }[], saved: string[]): number {
   let count = 0
-  for (let i = 0; i < rows.length; i += 1) {
+  const len = Math.max(rows.length, saved.length)
+  for (let i = 0; i < len; i += 1) {
+    const rowValue = i < rows.length ? String(rows[i].value || '') : ''
     const compared = i < saved.length ? String(saved[i] || '') : ''
-    if (String(rows[i].value || '').trim() !== compared.trim()) count += 1
+    if (rowValue.trim() !== compared.trim()) count += 1
   }
   return count
 }
 
-/** 命令规则草稿与已保存值是否不同。 */
-function rulesDirty(rules: CommandRuleRow[], saved: SavedCommandRule[]): boolean {
-  if (rules.length !== saved.length) return true
-  for (let i = 0; i < rules.length; i += 1) {
-    const a = rules[i]
+/** 未保存改动计数：规则草稿与已保存值逐条位置比较（比较到两列表较长一方，
+ * 删除行形成的尾部差异也计入——与 dirsDirtyCount 同语义）。 */
+function rulesDirtyCount(rows: CommandRuleRow[], saved: SavedCommandRule[]): number {
+  let count = 0
+  const len = Math.max(rows.length, saved.length)
+  for (let i = 0; i < len; i += 1) {
+    const a = rows[i]
     const b = saved[i]
-    if ((a.tool || '') !== (b.tool || '')) return true
-    if (String(a.pattern || '').trim() !== String(b.pattern || '').trim()) return true
-    if ((a.action || 'ask') !== (b.action || 'ask')) return true
+    if (a === undefined || b === undefined
+      || (a.tool || '') !== (b.tool || '')
+      || String(a.pattern || '').trim() !== String(b.pattern || '').trim()
+      || (a.action || 'ask') !== (b.action || 'ask')) count += 1
   }
-  return false
+  return count
 }
 
-/** 禁读规则草稿与已保存值是否不同（无 tool 维度）。 */
-function noReadDirty(rules: NoReadRuleRow[], saved: SavedNoReadRule[]): boolean {
-  if (rules.length !== saved.length) return true
-  for (let i = 0; i < rules.length; i += 1) {
-    const a = rules[i]
+/** 未保存改动计数：禁读规则草稿与已保存值逐条位置比较（无 tool 维度）。 */
+function noReadDirtyCount(rows: NoReadRuleRow[], saved: SavedNoReadRule[]): number {
+  let count = 0
+  const len = Math.max(rows.length, saved.length)
+  for (let i = 0; i < len; i += 1) {
+    const a = rows[i]
     const b = saved[i]
-    if (String(a.pattern || '').trim() !== String(b.pattern || '').trim()) return true
-    if ((a.action || 'deny') !== (b.action || 'deny')) return true
+    if (a === undefined || b === undefined
+      || String(a.pattern || '').trim() !== String(b.pattern || '').trim()
+      || (a.action || 'deny') !== (b.action || 'deny')) count += 1
   }
-  return false
+  return count
 }
 
 /**
@@ -781,7 +786,6 @@ export function makeCommandsCard(form: FormController | null, t: Translate) {
     const [defaultAction, setDefaultAction] = useState('delegate')
     const [escalateAuto, setEscalateAuto] = useState(true)
     const [baseline, setBaseline] = useState(true)
-    const [sessionCache, setSessionCache] = useState(true)
     const [open, setOpen] = useState(false)
     const [saving, setSaving] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -798,7 +802,6 @@ export function makeCommandsCard(form: FormController | null, t: Translate) {
           setDefaultAction(cmds.default)
           setEscalateAuto(cmds.escalation !== 'never')
           setBaseline(cmds.baseline)
-          setSessionCache(cmds.sessionCache)
         } catch {
           // a stale form must never break the section render
         }
@@ -810,13 +813,13 @@ export function makeCommandsCard(form: FormController | null, t: Translate) {
     const locked = !isWritable(form)
     const overridden = fieldOverridden(form, 'commands')
     const saved = currentCommands(form)
-    const isDirty =
-      defaultAction !== (saved.default || 'delegate') ||
-      escalateAuto !== (saved.escalation !== 'never') ||
-      baseline !== saved.baseline ||
-      sessionCache !== saved.sessionCache ||
-      rulesDirty(rules, saved.rules)
-    const pendingCount = isDirty ? 1 : 0
+    // 未保存处数 = 改动的规则行数 + 改动的开关数（默认动作/升级/基线各计 1），
+    // 与授权目录卡片的「N 处未保存」同语义。
+    const pendingCount =
+      rulesDirtyCount(rules, saved.rules)
+      + (defaultAction !== (saved.default || 'delegate') ? 1 : 0)
+      + (escalateAuto !== (saved.escalation !== 'never') ? 1 : 0)
+      + (baseline !== saved.baseline ? 1 : 0)
     const resetProps = resetButtonProps(overridden, t)
     const actionOpts = actionOptions(t)
     const defaultOpts = actionOptions(t, true)
@@ -845,7 +848,6 @@ export function makeCommandsCard(form: FormController | null, t: Translate) {
       setDefaultAction(cmds.default || 'delegate')
       setEscalateAuto(cmds.escalation !== 'never')
       setBaseline(cmds.baseline)
-      setSessionCache(cmds.sessionCache)
       setError(null)
       dirtyRef.current = false
     }
@@ -883,7 +885,6 @@ export function makeCommandsCard(form: FormController | null, t: Translate) {
           default: defaultAction,
           escalation: escalateAuto ? 'capability' : 'never',
           baseline,
-          sessionCache,
           rules: cleanRules,
         }, t)
         restoreSaved()
@@ -895,7 +896,7 @@ export function makeCommandsCard(form: FormController | null, t: Translate) {
     }
 
     const countText = t('cmds.count', { count: saved.rules.length })
-      + (pendingCount > 0 ? t('cmds.countPending') : '')
+      + (pendingCount > 0 ? t('cmds.countPending', { count: pendingCount }) : '')
 
     return (
       <Card
@@ -997,11 +998,9 @@ export function makeCommandsCard(form: FormController | null, t: Translate) {
               <label className="sabx-check">
                 <input
                   type="checkbox"
-                  checked={option.key === 'baseline' ? baseline : sessionCache}
+                  checked={baseline}
                   disabled={saving || locked}
-                  onChange={(event) =>
-                    (option.key === 'baseline' ? setBaseline : setSessionCache)(event.target.checked)
-                  }
+                  onChange={(event) => setBaseline(event.target.checked)}
                 />
                 <span>{option.label}</span>
               </label>
@@ -1068,7 +1067,7 @@ export function makeNoReadCard(form: FormController | null, t: Translate) {
     const locked = !isWritable(form)
     const overridden = fieldOverridden(form, 'noRead')
     const saved = currentNoRead(form)
-    const pendingCount = noReadDirty(rules, saved) ? 1 : 0
+    const pendingCount = noReadDirtyCount(rules, saved)
     const resetProps = resetButtonProps(overridden, t)
 
     const setRule = (index: number, patch: Partial<NoReadRuleRow>) => {
@@ -1130,7 +1129,7 @@ export function makeNoReadCard(form: FormController | null, t: Translate) {
     }
 
     const countText = t('noread.count', { count: saved.length })
-      + (pendingCount > 0 ? t('noread.countPending') : '')
+      + (pendingCount > 0 ? t('noread.countPending', { count: pendingCount }) : '')
 
     return (
       <Card

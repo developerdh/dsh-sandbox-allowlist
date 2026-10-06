@@ -347,7 +347,6 @@ sandbox-allowlist:
     default: delegate
     escalation: capability
     baseline: true
-    sessionCache: true
     rules:
       - pattern: 'git status*'
         action: allow
@@ -411,11 +410,11 @@ its **own file tools**:
 > (read commands do not provoke a sandbox refusal); it is covered by the phase B probe's
 > G10 variant C case.
 
-### 4.5 Session cache and rule proposals
+### 4.5 Manual approvals and rule proposals
 
 | # | Action | Expected observation |
 |---|---|---|
-| C15 | redo C7, this time **approving by hand** in the escalation prompt; then run the exact same command again | no prompt the second time (session-scoped cache hit); change one argument (e.g. a different file name) ⇒ it prompts again (any argument change is a new command) |
+| C15 | redo C7, this time **approving by hand** in the escalation prompt; then run the exact same command again | the second run **prompts again** (the session-scoped command cache has been removed; every escalation requires manual confirmation) |
 | C16 | inspect (read-only) `<DSH_HOME>/sandbox-allowlist-proposals.json` | after approving the same shape by hand ≥ 2 times the corresponding proposal appears (`action` is always `allow`); meanwhile the decision log `<DSH_HOME>/sandbox-allowlist-decisions.jsonl` contains each decision's reason and per-statement capability class |
 
 ### 4.6 Settings-page UI spot check (optional, needs a browser)
@@ -423,8 +422,8 @@ its **own file tools**:
 Open the settings page's "Sandbox authorization" section: the command-rules card should show
 one **command-pattern input** per row plus the three-way `allow/ask/deny` action segmented
 control (no "program (optional)" input, no `allow↑`); one visible "auto-approve sandbox
-escalations" checkbox; and "built-in capability baseline"/"session-scoped command cache"
-folded into the collapsed-by-default "Advanced" area. Change one rule and save ⇒ the
+escalations" checkbox (labelled experimental); and "built-in capability baseline" folded
+into the collapsed-by-default "Advanced" area. Change one rule and save ⇒ the
 behaviour change is visible on C1/C2-style cases without a restart.
 
 ---

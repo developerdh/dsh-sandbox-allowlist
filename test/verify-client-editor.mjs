@@ -103,7 +103,6 @@ const formValue = {
     default: 'delegate',
     escalation: 'capability',
     baseline: true,
-    sessionCache: true,
     // Two pattern rules, so the rows (and their inputs) render.
     rules: [
       { pattern: 'git status*', action: 'allow' },
@@ -494,12 +493,12 @@ assert.ok(hasText('沙箱授权'), 'section title renders')
 
 // The command-surface knobs must be reachable from the settings page (a
 // config-only feature is half-delivered): the single visible escalation
-// switch, the collapsed 「高级」 zone with the other two booleans, and the
+// switch, the collapsed 「高级」 zone with the baseline boolean, and the
 // per-row pattern input.
-assert.ok(hasText('允许沙箱升级自动放行'), 'the escalation switch renders')
+assert.ok(hasText('允许自动批准沙箱升级'), 'the escalation switch renders')
 assert.ok(hasText('高级'), 'the advanced collapsible renders')
 assert.ok(hasText('内置能力基线'), 'the baseline knob renders')
-assert.ok(hasText('会话级命令缓存'), 'the session-cache knob renders')
+assert.ok(hasText('会话级命令缓存') === false, 'the removed session-cache knob stays removed')
 assert.ok(hasText('程序（可选）') === false, 'placeholder text is a prop, not a child')
 assert.ok(
   nodes.some((n) => n.element && n.element.type === 'input' && n.element.props && n.element.props['aria-label'] === '命令模式'),
@@ -510,7 +509,7 @@ assert.ok(
   'the removed argv-level program input stays removed',
 )
 const checkboxes = elements.filter((el) => el.type === 'input' && el.props && el.props.type === 'checkbox')
-assert.equal(checkboxes.length, 3, 'the escalation switch plus the two advanced checkboxes render as plain checkboxes')
+assert.equal(checkboxes.length, 2, 'the escalation switch plus the baseline advanced checkbox render as plain checkboxes')
 
 // Switching the host locale must switch the copy: `t` reads the active locale
 // at call time, so re-rendering under `en` yields the English surface.
@@ -554,7 +553,6 @@ const localesTs = readFileSync(join(here, '..', 'src', 'client', 'locales.ts'), 
 for (const marker of [
   'cmds.escalationCheck',
   'cmds.baselineLabel',
-  'cmds.sessionLabel',
   'baselineOptions',
   // 会话 cwd 契约读法、DOM 内确认弹层/busy 层、本地时间渲染与 body 级自绘
   // 悬浮气泡（两个文件必须同步演进）。
@@ -585,7 +583,7 @@ const resolvesKey = (text, key) =>
   || text.includes(`t("${key}")`)
   || text.includes(`labelKey: '${key}'`)
   || text.includes(`hintKey: '${key}'`)
-for (const key of ['cmds.escalationCheck', 'cmds.baselineLabel', 'cmds.sessionLabel']) {
+for (const key of ['cmds.escalationCheck', 'cmds.baselineLabel']) {
   assert.ok(
     resolvesKey(renderCode, key),
     `lib/client.js render code resolves the key: ${key}`,
@@ -596,7 +594,7 @@ for (const key of ['cmds.escalationCheck', 'cmds.baselineLabel', 'cmds.sessionLa
   )
 }
 // The copy itself must live in the dictionary module.
-for (const prose of ['允许沙箱升级自动放行', '内置能力基线', '会话级命令缓存']) {
+for (const prose of ['允许自动批准沙箱升级', '内置能力基线', '实验性功能']) {
   assert.ok(localesTs.includes(prose), `src/client/locales.ts carries the copy: ${prose}`)
 }
 
@@ -656,5 +654,91 @@ assert.equal(
   'no session entry registers on a host without the state route',
 )
 assert.ok(linuxRegistered.some((r) => r.spec.name === 'settings.section'), 'settings section still registers without the panel')
+
+// ── Regression: deleting a configured directory row must raise the unsaved badge ──
+// dirsDirtyCount used to compare positions only up to rows.length, so removing
+// the LAST configured row (the single-directory case most users have) counted
+// zero differences: no has-pending class, no 「· N 处未保存」 suffix and the
+// 放弃修改 button stayed disabled — while both rule cards flag any deletion via
+// their length check. Deleting a middle row shifted positions and masked this.
+{
+  const findArticle = (rootNode, id) => {
+    const hit = collect(rootNode, []).find((n) => n.element && n.element.type === 'article' && n.element.props && n.element.props.id === id)
+    return hit && hit.element
+  }
+  const findButtonWithText = (node, text) =>
+    collect(node, []).find((n) => n.element && n.element.type === 'button'
+      && collect(n.element, []).some((inner) => inner.text === text))
+
+  // Seed one configured directory, then render twice (first pass runs the
+  // seeding effect, second pass shows the row) — the harness's usual rhythm.
+  formValue.allowedDirs = ['D:\\Shared\\Tools']
+  render(registered[0].component())
+  const seededRoot = render(registered[0].component())
+  const seededArticle = findArticle(seededRoot, 'sabx-card-dirs')
+  assert.ok(
+    collect(seededRoot, []).some((n) => n.element && n.element.type === 'button' && n.element.props && n.element.props['aria-label'] === '删除'),
+    'precondition: the configured directory row renders with its delete button',
+  )
+  const discardBefore = findButtonWithText(seededArticle, '放弃修改')
+  assert.ok(discardBefore && discardBefore.element.props.disabled === true, 'precondition: 放弃修改 starts disabled (nothing unsaved)')
+
+  // Click the row's ✕: the deletion is an unsaved change and must be flagged.
+  const deleteBtn = collect(seededRoot, []).find((n) => n.element && n.element.type === 'button' && n.element.props && n.element.props['aria-label'] === '删除')
+  deleteBtn.element.props.onClick()
+  const afterRoot = render(registered[0].component())
+  const afterArticle = findArticle(afterRoot, 'sabx-card-dirs')
+  assert.ok(String(afterArticle.props.className || '').includes('has-pending'), 'deleting the last configured row raises the unsaved badge')
+  assert.ok(
+    collect(afterRoot, []).some((n) => n.text !== undefined && n.text.includes('处未保存')),
+    'the header count carries the pending suffix after the deletion',
+  )
+  const discardAfter = findButtonWithText(afterArticle, '放弃修改')
+  assert.ok(discardAfter && discardAfter.element.props.disabled === false, '放弃修改 becomes available so the deletion can be undone')
+
+  // The rule cards use the same 「· N 处未保存」 count semantics now.
+  const cmdArticleBefore = findArticle(seededRoot, 'sabx-card-cmds')
+  assert.ok(!String(cmdArticleBefore.props.className || '').includes('has-pending'), 'precondition: commands card starts clean')
+  const ruleDelete = collect(seededRoot, []).find((n) => n.element && n.element.type === 'button'
+    && n.element.props && n.element.props['aria-label'] === '删除规则')
+  assert.ok(ruleDelete, 'precondition: a command rule row renders with its delete button')
+  ruleDelete.element.props.onClick()
+  const afterCmdRoot = render(registered[0].component())
+  const cmdArticle = findArticle(afterCmdRoot, 'sabx-card-cmds')
+  assert.ok(String(cmdArticle.props.className || '').includes('has-pending'), 'deleting a rule row raises the commands badge')
+  assert.ok(
+    collect(afterCmdRoot, []).some((n) => n.text !== undefined && n.text.includes('处未保存')),
+    'the commands header carries the count suffix too',
+  )
+
+  // A toggled switch counts as one more 处: flip the baseline checkbox.
+  let baselineInput = null
+  const walk = (node, visit) => {
+    if (Array.isArray(node)) { node.forEach((n) => walk(n, visit)); return }
+    if (node === null || node === undefined) return
+    visit(node)
+    if (typeof node === 'object') walk(node.children, visit)
+  }
+  walk(afterCmdRoot, (el) => {
+    if (el.type === 'label' && baselineInput === null) {
+      let labeled = false
+      walk(el.children, (n) => { if (typeof n === 'string' && n.includes('内置能力基线')) labeled = true })
+      if (labeled) {
+        walk(el.children, (n) => {
+          if (baselineInput === null && n.type === 'input' && n.props && n.props.type === 'checkbox') baselineInput = n
+        })
+      }
+    }
+  })
+  assert.ok(baselineInput, 'the baseline checkbox renders inside its label')
+  baselineInput.props.onChange({ target: { checked: false } })
+  const afterToggleRoot = render(registered[0].component())
+  const toggleArticle = findArticle(afterToggleRoot, 'sabx-card-cmds')
+  assert.ok(String(toggleArticle.props.className || '').includes('has-pending'), 'the toggle change keeps the badge on')
+  assert.ok(
+    collect(afterToggleRoot, []).some((n) => n.text !== undefined && n.text.includes('· 3 处未保存')),
+    'the header counts the rule deletion plus the toggled switch (3 处)',
+  )
+}
 
 console.log('verify-client-editor: all checks passed')

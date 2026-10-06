@@ -66,8 +66,8 @@ dsh plugin --profile web add /tmp/pkg/dsh-sandbox-allowlist-*.tgz
 | `allowedDirs` | 工作区外受信可写目录，支持 `**` / `*` / `?` 通配 | [指南 §1](docs/guides/permission-rules.md) |
 | `commands.rules` | 命令模式 + 动作；按序匹配、最后命中生效；复合命令逐段判定 | [指南 §2](docs/guides/permission-rules.md) |
 | `commands.default` | 未命中规则时的默认动作：`delegate` / `allow` / `ask` / `deny` | 同上 |
-| `commands.escalation` | 沙箱升级自动放行：`capability`（默认）/ `never` | 同上 |
-| `commands.baseline` / `sessionCache` | 内置能力基线 / 会话级命令缓存（默认开） | 同上 |
+| `commands.escalation` | 沙箱升级自动放行（实验性）：`capability`（默认）/ `never` | 同上 |
+| `commands.baseline` | 内置能力基线（默认开） | 同上 |
 | `noRead` | 禁读规则：文件名 / 完整路径 / 目录级三种形态，`deny` / `ask` | [指南 §3](docs/guides/permission-rules.md) |
 
 完整语义（判定流程三层、硬约束、Auto review 委让、决策轨迹、场景示例、排障
