@@ -105,7 +105,7 @@ lib/command-analyze.mjs    结构化解析：替换体递归、重定向目标�
 lib/command-classes.mjs    能力分类表：read/local-write/repo-exec/external/opaque/destructive/unknown
 lib/command-expand.mjs     元程序展开：pnpm/npm/yarn run → package.json 脚本文本
 lib/command-decision.mjs   唯一决策引擎（沙箱相位 + 升级相位）+ 路径范围判定 + 解释
-lib/command-audit.mjs      决策轨迹（ring + JSONL）、会话级缓存、规则提案计数
+lib/command-audit.mjs      决策轨迹（ring + JSONL）、规则提案计数
 lib/command-gate.mjs       tools/pre-execute 门：沙箱相位判定 + 调用关联 + 审计
 lib/command-approval-gate.mjs  approval/request 门：升级相位判定 + 弹窗解释 + 学习
 lib/read-deny.mjs   禁读规则引擎（文件名/路径匹配 + deny/ask，纯函数）

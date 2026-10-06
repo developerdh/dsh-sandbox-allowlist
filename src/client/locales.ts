@@ -46,11 +46,10 @@ export const zh = {
     + '按「每条独立命令」判定（复合命令按 <code>;</code> / <code>&amp;&amp;</code> / <code>|</code> 拆开分别匹配），最后一条命中的规则生效。<br>'
     + '动作：<code>allow</code>=放行（<b>含允许它在沙箱外运行</b>）；<code>ask</code>=弹审批；<code>deny</code>=拦截。',
   'cmds.tailHint': '空白行不会保存；工具留空（任意）时规则对所有 shell 工具生效。写工作区之外的路径请用「授权目录」，命令规则覆盖不了越界写入。',
-  'cmds.escalationHint': '沙箱升级 = 命令被沙箱拒绝后，AI 带 sandbox_permissions 重试、命令将在沙箱外运行的那次审批。'
-    + '开启后：命中 allow 规则的命令、以及只读/只写工作区与授权目录内路径的命令（内置能力类），升级自动放行；'
-    + '关闭后：所有升级都弹审批。越界写入、禁读目标、deny/ask 命中永远不自动放行。',
-  'cmds.baselineHint': '开启后，只读命令与「只写工作区/授权目录内路径」的命令无需任何规则即可识别（这是内置基线，不是放行升级）。关闭后完全按你写的规则判定。',
-  'cmds.sessionHint': '开启后，你手工批准过的某条命令（完全相同的命令文本）在本会话内不再重复询问——AI 反复重试同一条命令时只问一次。',
+  'cmds.escalationHint': '实验性功能。沙箱升级指：命令被沙箱拦截后，AI 携带 sandbox_permissions 重新发起执行、使命令脱离沙箱约束运行，此类请求默认需要人工审批。'
+    + '开启后，满足以下任一条件的升级将自动批准、不再弹窗：① 命中 allow 规则的命令；② 属于内置能力基线的安全命令（只读，或仅写入工作区与授权目录）。'
+    + '其余升级（解释器、联网、包管理器等）仍会弹窗审批；命中 deny/ask 规则、越界写入或引用禁读文件的命令永远不会自动批准。',
+  'cmds.baselineHint': '开启后，只读命令（如 ls、git status）与只在工作区/授权目录内写入的命令，不需要写任何规则就免审批运行——引擎内置了这份「安全命令」清单。若「沙箱升级」也开启，这类命令的升级请求同样自动批准。关闭后没有这份清单：一切按你写的规则判定，未命中规则的命令按上方「默认动作」处理。',
   'cmds.name': '命令规则',
   'cmds.desc': '按「命令模式 + 动作」放行 / 询问 / 拦截 shell 命令。',
   'cmds.defaultLabel': '未命中任何规则时的默认动作',
@@ -63,14 +62,13 @@ export const zh = {
   'cmds.actionAria': '动作',
   'cmds.removeAria': '删除规则',
   'cmds.removeTitle': '删除该规则',
-  'cmds.escalationLabel': '沙箱升级',
-  'cmds.escalationCheck': '允许沙箱升级自动放行',
+  'cmds.escalationLabel': '沙箱升级（实验性）',
+  'cmds.escalationCheck': '允许自动批准沙箱升级',
   'cmds.advanced': '高级',
   'cmds.baselineLabel': '内置能力基线',
-  'cmds.sessionLabel': '会话级命令缓存',
   'cmds.save': '保存命令规则',
   'cmds.count': '{count} 条规则',
-  'cmds.countPending': ' · 未保存修改',
+  'cmds.countPending': ' · {count} 处未保存',
 
   // ── 禁读规则卡片 ────────────────────────────────────────────────────────────
   'noread.hint': 'pattern 支持 <code>*</code>（任意多个字符）与 <code>?</code>（单个字符）。'
@@ -88,7 +86,7 @@ export const zh = {
   'noread.add': '添加规则',
   'noread.save': '保存禁读规则',
   'noread.count': '{count} 条规则',
-  'noread.countPending': ' · 未保存修改',
+  'noread.countPending': ' · {count} 处未保存',
   'noread.actionAria': '禁读动作',
   'noread.removeAria': '删除禁读规则',
   'noread.removeTitle': '删除该禁读规则',
@@ -205,11 +203,10 @@ export const en = {
     + 'Matching is per individual command (compound commands are split on <code>;</code> / <code>&amp;&amp;</code> / <code>|</code> and matched separately), and the last matching rule wins.<br>'
     + 'Actions: <code>allow</code> = permit (<b>including running it outside the sandbox</b>); <code>ask</code> = prompt for approval; <code>deny</code> = block.',
   'cmds.tailHint': 'Blank rows are not saved; leaving the tool empty (any) makes the rule apply to every shell tool. To write outside the workspace use "Authorized directories" — command rules cannot cover out-of-bounds writes.',
-  'cmds.escalationHint': 'Sandbox escalation = the approval for when a command was refused by the sandbox and the AI retries it with sandbox_permissions, which would run it outside the sandbox. '
-    + 'When enabled: commands matching an allow rule, and commands that only read or only write inside the workspace and the authorized directories (built-in capability class), are escalated automatically. '
-    + 'When disabled: every escalation prompts. Out-of-bounds writes, read-denied targets and deny/ask matches are never auto-approved.',
-  'cmds.baselineHint': 'When enabled, read-only commands and commands that only write inside the workspace / authorized directories are recognised without any rule (this is the built-in baseline, not an escalation permit). When disabled, only the rules you wrote decide.',
-  'cmds.sessionHint': 'When enabled, a command you approved by hand (the exact same command text) is not asked again in this session — the AI can retry the same command repeatedly and be asked only once.',
+  'cmds.escalationHint': 'Experimental feature. A sandbox escalation happens when a command is refused by the sandbox and the AI retries it with sandbox_permissions, so the command would run outside the sandbox; such requests require manual approval by default. '
+    + 'When this switch is on, an escalation is approved automatically (no prompt) if either condition holds: the command matches an allow rule, or it falls under the built-in capability baseline (read-only, or writing only inside the workspace and the authorized directories). '
+    + 'Any other escalation (interpreters, network access, package managers, …) still prompts. Commands that hit deny/ask rules, write out of bounds, or reference read-restricted files are never auto-approved.',
+  'cmds.baselineHint': 'When enabled, read-only commands (ls, git status, …) and commands that write only inside the workspace / the authorized directories run without an approval prompt even with no rule written — the engine ships with this built-in list of "safe commands". With "Sandbox escalation" also enabled, escalation requests for such commands are auto-approved too. When disabled there is no such list: only your written rules decide, and unmatched commands fall back to the "Default action" above.',
   'cmds.name': 'Command rules',
   'cmds.desc': 'Allow / ask / block shell commands by command pattern and action.',
   'cmds.defaultLabel': 'Default action when no rule matches',
@@ -222,14 +219,13 @@ export const en = {
   'cmds.actionAria': 'Action',
   'cmds.removeAria': 'Delete rule',
   'cmds.removeTitle': 'Delete this rule',
-  'cmds.escalationLabel': 'Sandbox escalation',
+  'cmds.escalationLabel': 'Sandbox escalation (experimental)',
   'cmds.escalationCheck': 'Auto-approve sandbox escalations',
   'cmds.advanced': 'Advanced',
   'cmds.baselineLabel': 'Built-in capability baseline',
-  'cmds.sessionLabel': 'Session-scoped command cache',
   'cmds.save': 'Save command rules',
   'cmds.count': '{count} rule(s)',
-  'cmds.countPending': ' · unsaved changes',
+  'cmds.countPending': ' · {count} unsaved',
 
   // ── Read restrictions card ──────────────────────────────────────────────────
   'noread.hint': 'Patterns support <code>*</code> (any number of characters) and <code>?</code> (a single character). '
@@ -247,7 +243,7 @@ export const en = {
   'noread.add': 'Add rule',
   'noread.save': 'Save read restrictions',
   'noread.count': '{count} rule(s)',
-  'noread.countPending': ' · unsaved changes',
+  'noread.countPending': ' · {count} unsaved',
   'noread.actionAria': 'Read-restriction action',
   'noread.removeAria': 'Delete read restriction',
   'noread.removeTitle': 'Delete this read restriction',

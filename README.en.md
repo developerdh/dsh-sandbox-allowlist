@@ -72,8 +72,8 @@ configuration (**paths are examples — replace them with your real directories*
 | `allowedDirs` | trusted writable directories outside the workspace, with `**` / `*` / `?` wildcards | [guide §1](docs/guides/permission-rules.en.md) |
 | `commands.rules` | command pattern + action; matched in order, last match wins; compound commands judged segment by segment | [guide §2](docs/guides/permission-rules.en.md) |
 | `commands.default` | default action when no rule matches: `delegate` / `allow` / `ask` / `deny` | same |
-| `commands.escalation` | auto-approve sandbox escalations: `capability` (default) / `never` | same |
-| `commands.baseline` / `sessionCache` | built-in capability baseline / session-scoped command cache (on by default) | same |
+| `commands.escalation` | auto-approve sandbox escalations (experimental): `capability` (default) / `never` | same |
+| `commands.baseline` | built-in capability baseline (on by default) | same |
 | `noRead` | read restrictions: file-name / full-path / directory-wide forms, `deny` / `ask` | [guide §3](docs/guides/permission-rules.en.md) |
 
 Full semantics (the three-layer decision flow, hard tracks, Auto review delegation,
