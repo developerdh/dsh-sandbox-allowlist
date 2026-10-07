@@ -816,6 +816,13 @@ for (const marker of [
   assert.ok(source.includes(marker), `lib/client.js carries the marker: ${marker}`)
   assert.ok(tsx.includes(marker), `src/client/index.tsx carries the marker: ${marker}`)
 }
+// 审批弹框多行渲染补丁（可行性报告方案二）：宿主 headline 未设 white-space，
+// 解释块的 \n 靠这条样式保住。样式注入只在 bundle（tsx 头注释的分工），故只
+// 断言 bundle——误删即静默退回一行长句。
+assert.ok(
+  source.includes('[data-approval-scroll] > div:first-child{white-space:pre-wrap'),
+  'lib/client.js injects the approval-prompt pre-wrap patch',
+)
 // Every key the bundle serves must exist in the TS dictionary too.
 for (const key of zhKeys) {
   assert.ok(localesTs.includes(`'${key}'`), `src/client/locales.ts declares the key: ${key}`)
