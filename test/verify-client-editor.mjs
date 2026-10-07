@@ -402,6 +402,257 @@ assert.equal(foreignTrigger.props.disabled, true, 'the picker stays disabled on 
 const foreignValue = findByClass(foreignView2, 'sabx-panel-ws-value')
 assert.deepEqual(foreignValue.children, ['D:\\Demo\\B'], 'the empty panel still shows which workspace it is looking at')
 
+// ── L4-01…L4-05: 坏数据渲染矩阵 / 空错态 / 确认弹层流 / 状态过滤器 / 选中语义 ──
+// 两条节奏坑（用例规格 §4）：busy 最短展示 BUSY_MIN_MS=700ms（断言前等 800ms）、
+// hooks 状态跨阶段残留（换 stub 后必须「渲染 + 刷新」重新 load 才吃到新数据）。
+const waitBusy = () => new Promise((resolve) => setTimeout(resolve, 800))
+const textOf = (node) => collect(node, []).filter((n) => n.text !== undefined).map((n) => n.text).join('')
+const findRowByPath = (rootNode, pathText) => {
+  let hit = null
+  const walk = (n) => {
+    if (hit || n === null || typeof n !== 'object') return
+    if (Array.isArray(n)) { n.forEach(walk); return }
+    if (n.type === 'tr' && Array.isArray(n.children) && n.children.length > 0) {
+      const first = n.children[0]
+      if (first && first.type === 'td' && textOf(first) === pathText) { hit = n; return }
+    }
+    walk(n.children || [])
+  }
+  walk(rootNode)
+  return hit
+}
+const cellPathsOf = (rootNode) => {
+  const paths = []
+  const walk = (n) => {
+    if (n === null || typeof n !== 'object') return
+    if (Array.isArray(n)) { n.forEach(walk); return }
+    if (n.type === 'td' && String(n.props.className || '').includes('sabx-panel-cellpath')) paths.push(textOf(n))
+    walk(n.children || [])
+  }
+  walk(rootNode)
+  return paths
+}
+const stubView = (view) => {
+  globalThis.fetch = async (url, options) => {
+    fetchCalls.push({ url: String(url), body: options && typeof options.body === 'string' ? options.body : '' })
+    return { ok: true, json: async () => ({ ok: true, value: view }) }
+  }
+}
+
+// L4-01: 坏数据渲染矩阵——五类行 × 各列契约（时间「—」/失败点/原因原文/
+// 待回收无操作/已撤销可恢复/已授权可撤销）。
+const matrixView = {
+  supported: true,
+  current: SESSION_CWD,
+  workspaces: {
+    [SESSION_CWD]: {
+      sid: 'S-1-5-DEMO', updatedAt: '2026-10-05T00:00:00.000Z',
+      roots: [
+        { path: 'D:\\Demo\\Null', status: 'granted', grantedAt: null, excluded: false, fromPatterns: ['D:\\Demo\\Null'] },
+        { path: 'D:\\Demo\\Dead', status: 'failed', grantedAt: null, error: 'SetNamedSecurityInfoW failed (Win32 5)', errorAt: '2026-10-05T01:00:00.000Z', excluded: false, fromPatterns: ['D:\\Demo\\Dead'] },
+        { path: 'D:\\Demo\\Live', status: 'granted', grantedAt: '2026-10-05T02:00:00.000Z', excluded: true, fromPatterns: ['D:\\Demo\\Live'] },
+      ],
+      pendingRevoke: [
+        { path: 'D:\\Demo\\Stuck', origin: 'excluded', error: 'strip failed: no PowerShell host', attempts: 2, lastAttemptAt: '2026-10-05T03:00:00.000Z', fromPatterns: [] },
+      ],
+      history: [
+        { path: 'D:\\Demo\\Gone', revokedAt: '2026-10-05T04:00:00.000Z', origin: 'excluded', fromPatterns: [] },
+      ],
+    },
+  },
+}
+stubView(matrixView)
+fetchCalls.length = 0
+findButtonByAria(render({ type: panelType, props: sessionProps(SESSION_CWD) }), '刷新授权状态').props.onClick()
+await settle()
+await waitBusy()
+const matrixShown = render({ type: panelType, props: sessionProps(SESSION_CWD) })
+assert.deepEqual(cellPathsOf(matrixShown).sort(), [
+  'D:\\Demo\\Dead', 'D:\\Demo\\Gone', 'D:\\Demo\\Live', 'D:\\Demo\\Null', 'D:\\Demo\\Stuck',
+].sort(), 'the matrix renders all five rows under 「全部」')
+// granted 行（grantedAt:null → 时间列「—」；操作列「撤销」）
+const nullRow = findRowByPath(matrixShown, 'D:\\Demo\\Null')
+assert.ok(nullRow, 'the granted row renders')
+assert.deepEqual(nullRow.children[2].children, ['—'], 'a granted row with grantedAt:null renders 「—」 in the time column')
+assert.ok(findButtonByAria(nullRow, '撤销该目录的写授权'), 'the granted row offers the revoke action')
+// failed 行（失败点 errorAt + 原因列 error 原文 + 重试授权）
+const failedRow = findRowByPath(matrixShown, 'D:\\Demo\\Dead')
+assert.ok(failedRow, 'the failed row renders')
+assert.ok(textOf(failedRow.children[1]).includes('授权失败'), 'the failed row shows the failed state')
+assert.equal(textOf(failedRow.children[3]), 'SetNamedSecurityInfoW failed (Win32 5)', 'the reason column carries the raw error')
+assert.equal(failedRow.children[3].props['data-tip'], 'SetNamedSecurityInfoW failed (Win32 5)', 'the reason cell exposes the full error via data-tip')
+assert.deepEqual(failedRow.children[2].children, [localTime('2026-10-05T01:00:00.000Z')], 'the failed row times from errorAt')
+assert.ok(findButtonByAria(failedRow, '手动重试该目录的写授权物化'), 'the failed row offers the retry-grant action')
+// roots 内 excluded 行 → 待回收 + 固定待回收文案 + 操作列空
+const liveRow = findRowByPath(matrixShown, 'D:\\Demo\\Live')
+assert.ok(liveRow, 'the roots-excluded row renders')
+assert.ok(textOf(liveRow.children[1]).includes('待回收'), 'a roots-excluded row shows the pending state')
+assert.ok(textOf(liveRow.children[3]).includes('撤销中'), 'the pending row spells the pending reason')
+assert.equal(findButtonByAria(liveRow, '撤销该目录的写授权'), null)
+assert.equal(findButtonByAria(liveRow, '恢复该目录的写授权'), null)
+assert.equal(findButtonByAria(liveRow, '手动重试该目录的写授权物化'), null, 'pending rows offer no action button')
+// pendingRevoke 行（待回收 + error 原文 + lastAttemptAt 时间）
+const stuckRow = findRowByPath(matrixShown, 'D:\\Demo\\Stuck')
+assert.ok(stuckRow, 'the pendingRevoke row renders')
+assert.ok(textOf(stuckRow.children[1]).includes('待回收'), 'the pendingRevoke row shows the pending state')
+assert.equal(textOf(stuckRow.children[3]), 'strip failed: no PowerShell host', 'the pendingRevoke row carries its error verbatim')
+assert.deepEqual(stuckRow.children[2].children, [localTime('2026-10-05T03:00:00.000Z')], 'the pendingRevoke row times from lastAttemptAt')
+// history(origin=excluded) 行 → 已撤销 + 「恢复」
+const goneRow = findRowByPath(matrixShown, 'D:\\Demo\\Gone')
+assert.ok(goneRow, 'the revoked row renders')
+assert.ok(textOf(goneRow.children[1]).includes('已撤销'), 'the revoked row shows the revoked state')
+assert.ok(findButtonByAria(goneRow, '恢复该目录的写授权'), 'the revoked row offers the restore action')
+
+// L4-02: 空态与错误态——空清单空态；fetch reject → role=alert + 错误文案，面板不崩；恢复后错误行消失。
+stubView({ supported: true, current: '', workspaces: {} })
+fetchCalls.length = 0
+findButtonByAria(render({ type: panelType, props: sessionProps(SESSION_CWD) }), '刷新授权状态').props.onClick()
+await settle()
+await waitBusy()
+const emptyShown = render({ type: panelType, props: sessionProps(SESSION_CWD) })
+assert.ok(hasTextIn(collect(emptyShown, []), '当前工作区暂无授权记录'), 'an empty manifest shows the empty state')
+assert.equal(cellPathsOf(emptyShown).length, 0, 'no rows render in the empty state')
+
+globalThis.fetch = async () => { throw new Error('boom') }
+fetchCalls.length = 0
+findButtonByAria(render({ type: panelType, props: sessionProps(SESSION_CWD) }), '刷新授权状态').props.onClick()
+await settle()
+const errorShown = render({ type: panelType, props: sessionProps(SESSION_CWD) })
+const errorNodes = collect(errorShown, [])
+assert.ok(errorNodes.some((n) => n.element && n.element.type === 'p' && n.element.props && n.element.props.role === 'alert'),
+  'the fetch failure renders a role=alert error line')
+assert.ok(hasTextIn(errorNodes, '载入失败') && hasTextIn(errorNodes, 'boom'), 'the error line spells the failure message')
+assert.ok(findButtonByAria(errorShown, '刷新授权状态'), 'the panel survives the fetch failure (refresh still offered)')
+stubView(matrixView)
+fetchCalls.length = 0
+findButtonByAria(render({ type: panelType, props: sessionProps(SESSION_CWD) }), '刷新授权状态').props.onClick()
+await settle()
+await waitBusy()
+const recoveryShown = render({ type: panelType, props: sessionProps(SESSION_CWD) })
+assert.equal(collect(recoveryShown, []).some((n) => n.element && n.element.type === 'p' && n.element.props && n.element.props.role === 'alert'),
+  false, 'a successful refresh clears the error line')
+assert.equal(cellPathsOf(recoveryShown).length, 5, 'rows render again after recovery')
+
+// L4-03: 确认弹层取消路径（遮罩 / 取消按钮 → 零请求）与确认恰一次；恢复对称。
+const postCount = (endpoint) => fetchCalls.filter((call) => call.url.endsWith(`/api/${endpoint}`)).length
+findButtonByAria(render({ type: panelType, props: sessionProps(SESSION_CWD) }), '撤销该目录的写授权').props.onClick()
+const overlayNode = findByClass(render({ type: panelType, props: sessionProps(SESSION_CWD) }), 'sabx-confirm-overlay')
+assert.ok(overlayNode, 'the revoke confirm opens as a layer')
+fetchCalls.length = 0
+overlayNode.props.onClick() // 点遮罩 = 取消
+await settle()
+assert.equal(postCount('revoke'), 0, 'clicking the overlay cancels: no revoke request')
+assert.equal(findByClass(render({ type: panelType, props: sessionProps(SESSION_CWD) }), 'sabx-confirm-overlay'), null,
+  'the overlay closes on the backdrop click')
+findButtonByAria(render({ type: panelType, props: sessionProps(SESSION_CWD) }), '撤销该目录的写授权').props.onClick()
+const cancelButton = findButtonByText(render({ type: panelType, props: sessionProps(SESSION_CWD) }), '取消')
+assert.ok(cancelButton, 'the confirm offers the cancel button')
+fetchCalls.length = 0
+cancelButton.props.onClick()
+await settle()
+assert.equal(postCount('revoke'), 0, 'the cancel button cancels: no revoke request')
+findButtonByAria(render({ type: panelType, props: sessionProps(SESSION_CWD) }), '撤销该目录的写授权').props.onClick()
+const confirmPanelL3 = render({ type: panelType, props: sessionProps(SESSION_CWD) })
+fetchCalls.length = 0
+findButtonByText(confirmPanelL3, '确认').props.onClick()
+await settle()
+assert.equal(postCount('revoke'), 1, 'confirming issues exactly one revoke request')
+assert.deepEqual(JSON.parse(fetchCalls.find((call) => call.url.endsWith('/api/revoke')).body),
+  { path: 'D:\\Demo\\Null', workspace: SESSION_CWD }, 'the revoke targets the granted row of the viewed workspace')
+await waitBusy()
+findButtonByAria(render({ type: panelType, props: sessionProps(SESSION_CWD) }), '恢复该目录的写授权').props.onClick()
+fetchCalls.length = 0
+findButtonByText(render({ type: panelType, props: sessionProps(SESSION_CWD) }), '取消').props.onClick()
+await settle()
+assert.equal(postCount('restore'), 0, 'the restore cancel path sends no request')
+findButtonByAria(render({ type: panelType, props: sessionProps(SESSION_CWD) }), '恢复该目录的写授权').props.onClick()
+const restoreConfirmPanel = render({ type: panelType, props: sessionProps(SESSION_CWD) })
+fetchCalls.length = 0
+findButtonByText(restoreConfirmPanel, '确认').props.onClick()
+await settle()
+assert.equal(postCount('restore'), 1, 'confirming issues exactly one restore request')
+assert.deepEqual(JSON.parse(fetchCalls.find((call) => call.url.endsWith('/api/restore')).body),
+  { path: 'D:\\Demo\\Gone', workspace: SESSION_CWD }, 'the restore targets the revoked row')
+await waitBusy()
+
+// L4-04: 状态过滤器——四态 + 全部，各过滤下行集合与 data-active 选中态。
+const ALL_PATHS = ['D:\\Demo\\Dead', 'D:\\Demo\\Gone', 'D:\\Demo\\Live', 'D:\\Demo\\Null', 'D:\\Demo\\Stuck']
+const filterButtonsOf = (panelNode) => {
+  const box = findByClass(panelNode, 'sabx-panel-filters')
+  assert.ok(box, 'the filter bar renders')
+  // children 可能嵌套数组（JSX map 作为单参传入 createElement），递归收集按钮
+  const buttons = []
+  const walk = (n) => {
+    if (n === null || typeof n !== 'object') return
+    if (Array.isArray(n)) { n.forEach(walk); return }
+    if (n.type === 'button') { buttons.push(n); return }
+    walk(n.children || [])
+  }
+  walk(box.children || [])
+  return buttons
+}
+const applyFilter = async (label, expectedPaths) => {
+  const panelNode = render({ type: panelType, props: sessionProps(SESSION_CWD) })
+  const button = filterButtonsOf(panelNode).find((b) => textOf(b) === label)
+  assert.ok(button, `the 「${label}」 filter renders`)
+  button.props.onClick()
+  const after = render({ type: panelType, props: sessionProps(SESSION_CWD) })
+  assert.deepEqual(cellPathsOf(after).sort(), [...expectedPaths].sort(), `the 「${label}」 filter shows exactly its rows`)
+  for (const b of filterButtonsOf(after)) {
+    assert.equal(b.props['data-active'], textOf(b) === label ? 'true' : 'false', `data-active tracks 「${label}」`)
+  }
+}
+assert.equal(filterButtonsOf(render({ type: panelType, props: sessionProps(SESSION_CWD) })).length, 5, 'all + four state filters render')
+await applyFilter('已授权', ['D:\\Demo\\Null'])
+await applyFilter('授权失败', ['D:\\Demo\\Dead'])
+await applyFilter('待回收', ['D:\\Demo\\Live', 'D:\\Demo\\Stuck'])
+await applyFilter('已撤销', ['D:\\Demo\\Gone'])
+await applyFilter('全部', ALL_PATHS)
+// DEF-1 修复回归（曾为 lib/client.js:2276 的 setConfirmKey ReferenceError 锚点）：
+// 切换过滤器必须（a）不再抛错、（b）关闭已打开的确认弹层。若崩溃回归，此处的
+// onClick 调用会直接以未捕获异常使本套件变红。
+findButtonByAria(render({ type: panelType, props: sessionProps(SESSION_CWD) }), '撤销该目录的写授权').props.onClick()
+assert.ok(findByClass(render({ type: panelType, props: sessionProps(SESSION_CWD) }), 'sabx-confirm-overlay'),
+  'precondition: the confirm layer is open')
+filterButtonsOf(render({ type: panelType, props: sessionProps(SESSION_CWD) })).find((b) => textOf(b) === '已撤销').props.onClick()
+assert.equal(findByClass(render({ type: panelType, props: sessionProps(SESSION_CWD) }), 'sabx-confirm-overlay'), null,
+  'switching filters closes the open confirm layer (DEF-1 fix)')
+filterButtonsOf(render({ type: panelType, props: sessionProps(SESSION_CWD) })).find((b) => textOf(b) === '全部').props.onClick()
+assert.equal(findByClass(render({ type: panelType, props: sessionProps(SESSION_CWD) }), 'sabx-confirm-overlay'), null,
+  'the filter state resets to 「全部」 for the following stages')
+
+// L4-05: 会话工作区选中语义——host 宽松同判命中（cwd 拼写变体 → 采纳精确清单键）、
+// current 命中但清单无此键（防御空态）；「不命中恒空态不回退」由现有 ⑤ 覆盖。
+const looseView = {
+  supported: true,
+  current: SESSION_CWD,
+  workspaces: {
+    [SESSION_CWD]: {
+      sid: null, updatedAt: null,
+      roots: [{ path: 'D:\\Demo\\Null', status: 'granted', grantedAt: '2026-10-05T00:00:00.000Z', excluded: false, fromPatterns: [] }],
+      pendingRevoke: [], history: [],
+    },
+  },
+}
+stubView(looseView)
+fetchCalls.length = 0
+const looseCwd = 'd:\\demo\\workspace'
+findButtonByAria(render({ type: panelType, props: sessionProps(looseCwd) }), '刷新授权状态').props.onClick()
+await settle()
+await waitBusy()
+assert.equal(JSON.parse(fetchCalls[0].body).sessionCwd, looseCwd, 'the raw session cwd is sent for the host to resolve loosely')
+const looseShown = render({ type: panelType, props: sessionProps(looseCwd) })
+assert.deepEqual(findByClass(looseShown, 'sabx-panel-ws-value').children, [SESSION_CWD],
+  'a loosely matched cwd adopts the exact manifest key')
+assert.ok(findButtonByAria(looseShown, '撤销该目录的写授权'), 'rows render under the adopted key')
+stubView({ supported: true, current: SESSION_CWD, workspaces: {} })
+fetchCalls.length = 0
+findButtonByAria(render({ type: panelType, props: sessionProps(SESSION_CWD) }), '刷新授权状态').props.onClick()
+await settle()
+await waitBusy()
+const ghostShown = render({ type: panelType, props: sessionProps(SESSION_CWD) })
+assert.ok(hasTextIn(collect(ghostShown, []), '当前工作区暂无授权记录'), 'a current without a manifest key stays on the empty state')
+
 // Plugins 页配置界面：bundle.config 按包名作 key，row.config 按「包名#行id」。
 // page 视图渲染与设置页同一份分节；summary 视图给一行说明文字。
 const bundleConfig = registered.find((r) => r.spec.name === 'plugins.bundle.config')

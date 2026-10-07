@@ -27,24 +27,56 @@
  *          the command gate scope immediately, restore puts it back, and the
  *          `_patternRoots()` audit mirror never loses it (the panel's
  *          restore depends on the unfiltered view).
+ *      4f. a v1 manifest with one still-covered and one no-longer-covered
+ *          path: the covered path gets grantedAt backfilled, the uncovered
+ *          path goes through the REAL strip primitive into
+ *          history(origin=config-removed);
+ *      4g. a corrupt manifest self-heals into a valid v2 view on the first
+ *          reconcile, with no ghost records;
+ *      4h. fake-account correction: an out-of-band ACE strip (real primitive)
+ *          makes the book lie — the panel revoke is an idempotent success and
+ *          restore re-materializes with a fresh grantedAt;
+ *      4i. a failing grant (seam fixture — see the scenario comment for why
+ *          the real-ACL fixture is not deterministic unattended) records
+ *          status=failed, and the panel's retry-grant flips it to granted
+ *          with the accounting cleaned up;
+ *      4j. workspace resolution priority: explicit workspace > sessionCwd
+ *          hit > instance root; an unknown workspace is refused.
  *
  * Run from this directory:
  *   node dry-mount.mjs
  */
 
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
 import { Context } from '@deepseek-ai/cordis'
 import PolicyPlugin from '../lib/policy.mjs'
 import FsPlugin from '../lib/fs.mjs'
-import { createApiHandler } from '../lib/state-routes.mjs'
+import { applyStateRoutes, createApiHandler } from '../lib/state-routes.mjs'
 
 // Machine-specific roots default to throwaway temp dirs so no real path is
 // committed or required; point DSH_TEST_WORKSPACE / DSH_TEST_TRUSTED at real
 // directories to probe an actual deployment layout.
 const created = []
+// 启动时清扫陈旧夹具：退出钩子是 best-effort，Windows 上偶发的 rmSync 失败会
+// 每轮留下 1~2 个夹具目录（历史观察）。只扫超过 24h 的同名前缀目录——阈值远
+// 大于任何一轮运行时长，并行运行中的新鲜目录不受影响；清扫失败不影响本次测试。
+{
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000
+  const prefixes = ['dsh-drymount-', 'dsh-allowlist-', 'dsh-grants-', 'dsh-revoke-tree-', 'dsh-scan-sid-', 'dsh-verify-ace-']
+  try {
+    for (const name of readdirSync(tmpdir())) {
+      if (!prefixes.some((prefix) => name.startsWith(prefix))) continue
+      try {
+        const full = join(tmpdir(), name)
+        if (statSync(full).mtimeMs < cutoff) rmSync(full, { recursive: true, force: true })
+      } catch { /* best effort */ }
+    }
+  } catch { /* best effort */ }
+}
 // 兜底回收：断言中断时尾部清理不会执行，退出钩子重放同一套 best-effort 清理
 //（fiber 随进程消亡；文件与目录是主要残留物）。
 process.on('exit', () => {
@@ -204,6 +236,43 @@ assert.ok(denied, 'write outside the trusted root must be denied')
 console.log('write outside trusted root: DENIED as expected')
 
 try { if (existsSync(inside.displayPath)) unlinkSync(inside.displayPath) } catch { /* best effort */ }
+
+// 3b. 非 win32 平台门（L3-03）：状态路由完全不注册——路由不在，客户端就没有
+//     入口信号（「Windows 才有入口」契约的 host 半边）。win32 机器上此块按
+//     条件跳过（不得删除，保证跨平台机器上套件仍验证该契约）；win32 的正向
+//     注册形状断言在第 5 节。
+if (process.platform !== 'win32') {
+  const freshL = new Context()
+  freshL.provide('sessionProjections', { register() {}, stateOf: () => undefined })
+  freshL.provide('systemPrompt', { context() { return () => {} } })
+  freshL.provide('fileUploads', { registerAgentResolver() {} })
+  const capturedL = { route: null }
+  freshL.provide('webServer', { register(spec) { capturedL.route = spec; return () => {} } })
+  const fiberL = freshL.plugin(PolicyPlugin, {
+    mode: 'workspace-write', workspaceRoot: mktemp('dsh-drymount-ws-l-'), allowedDirs: [], expandTtlMs: 0,
+  })
+  await fiberL
+  await new Promise((resolve) => setTimeout(resolve, 20)) // ctx.inject 回调窗口（此平台不会来）
+  assert.equal(capturedL.route, null, 'a non-win32 host registers no state route (no client entry signal)')
+  await fiberL.dispose()
+  console.log('3b. non-win32: state routes correctly absent')
+}
+
+// 3c. L3-03 补充：平台门在任何平台都可真实执行——本块临时伪装 platform 跑一次
+//     applyStateRoutes 后同步还原（同步代码 + finally 还原，不影响前后任何断言）。
+//     win32 机器上 3b 按条件跳过，本块保证「非 win32 不注册」契约不再只是跳过态。
+{
+  const realPlatform = process.platform
+  Object.defineProperty(process, 'platform', { value: 'linux' })
+  try {
+    let injectCalled = false
+    applyStateRoutes({ inject() { injectCalled = true } }, { _warn() {} })
+    assert.equal(injectCalled, false, 'a non-win32 platform never reaches route registration')
+  } finally {
+    Object.defineProperty(process, 'platform', { value: realPlatform })
+  }
+  console.log('3c. state-route platform gate holds (temporary platform fake)')
+}
 
 // 4. v2 manifest accounting suite (win32: materialization is win32-only).
 //    Fresh throwaway contexts per scenario; the PowerShell-backed strip is
@@ -386,6 +455,184 @@ if (process.platform === 'win32') {
     await mountE.fiber.dispose()
   }
 
+  // 4f. L2-01: v1 迁移条目 grantedAt 补记 + 配置已不含路径的真实剥离入史。
+  //     4a 只断言迁回 v2 + fromPatterns 回填且仅一条仍覆盖路径；本场景补双侧。
+  //     ACE 侧说明：v1 夹具从未物化过 ACE，未覆盖路径走的是真实剥离原语（未打
+  //     桩，目录存在但无命中 ACE → 幂等成功），记账侧即其可观测效果。
+  {
+    const homeF = mktemp('dsh-drymount-home-f-')
+    const wsF = mktemp('dsh-drymount-ws-f-')
+    const coveredF = mktemp('dsh-drymount-root-fc-')
+    const goneF = mktemp('dsh-drymount-root-fg-')
+    writeFileSync(join(homeF, 'sandbox-allowlist-grants.json'), JSON.stringify({ workspaces: { [wsF]: [coveredF, goneF] } }), 'utf8')
+    const mountF = await mountFreshPolicy({ workspaceRoot: wsF, allowedDirs: [coveredF], home: homeF })
+    mountF.policy.resolve()
+    await mountF.policy._reconcileTail
+    const fileF = JSON.parse(readFileSync(join(homeF, 'sandbox-allowlist-grants.json'), 'utf8'))
+    assert.equal(fileF.version, 2, '4f: manifest written back as v2')
+    const recF = fileF.workspaces[wsF]
+    const coveredEntryF = recF.roots.find((entry) => entry.path.toLowerCase() === coveredF.toLowerCase())
+    assert.ok(coveredEntryF && coveredEntryF.status === 'granted', '4f: covered path stays a granted root record')
+    assert.ok(typeof coveredEntryF.grantedAt === 'string' && !Number.isNaN(new Date(coveredEntryF.grantedAt).getTime()),
+      '4f: grantedAt backfilled from null on the first v2 reconcile')
+    assert.equal(recF.roots.some((entry) => entry.path.toLowerCase() === goneF.toLowerCase()), false, '4f: the uncovered path left roots[]')
+    const historyF = recF.history.find((entry) => entry.path.toLowerCase() === goneF.toLowerCase())
+    assert.ok(historyF, '4f: the uncovered path is audited in history')
+    assert.equal(historyF.origin, 'config-removed', '4f: the real strip is accounted as config-removed')
+    console.log('4f. v1 grantedAt backfilled; uncovered path stripped to history(config-removed)')
+    await mountF.fiber.dispose()
+  }
+
+  // 4g. L2-02: 损坏清单自愈——非法 JSON → 首次对账重建合法 v2 视图，无幽灵记录。
+  {
+    const homeG = mktemp('dsh-drymount-home-g-')
+    const wsG = mktemp('dsh-drymount-ws-g-')
+    const rootG = mktemp('dsh-drymount-root-g-')
+    writeFileSync(join(homeG, 'sandbox-allowlist-grants.json'), '{oops', 'utf8')
+    const mountG = await mountFreshPolicy({ workspaceRoot: wsG, allowedDirs: [`${rootG}\\**`], home: homeG })
+    mountG.policy.resolve()
+    await mountG.policy._reconcileTail
+    const fileG = JSON.parse(readFileSync(join(homeG, 'sandbox-allowlist-grants.json'), 'utf8'))
+    assert.equal(fileG.version, 2, '4g: the corrupt manifest is rewritten as a valid v2 document')
+    const recG = fileG.workspaces[wsG]
+    assert.ok(recG, '4g: the workspace record is rebuilt')
+    const entryG = recG.roots.find((entry) => entry.path.toLowerCase() === rootG.toLowerCase())
+    assert.ok(entryG && entryG.status === 'granted' && typeof entryG.grantedAt === 'string',
+      '4g: the covered directory is re-recorded as granted with grantedAt')
+    // fromPatterns 的契约面在视图层：collectViews 每次读取都合并实时 pattern 覆盖
+    //（文件层仅随其他脏标记落盘，见 4a 的 v1 迁移路径）——按「视图重建」断言。
+    const viewG = await createApiHandler(mountG.policy)('state', {})
+    assert.equal(viewG.ok, true)
+    const viewEntryG = viewG.value.workspaces[wsG].roots.find((entry) => entry.path.toLowerCase() === rootG.toLowerCase())
+    assert.ok(viewEntryG, '4g: the rebuilt root is visible in the view')
+    assert.deepEqual(viewEntryG.fromPatterns, [`${rootG}\\**`], '4g: the view merges live pattern coverage into fromPatterns')
+    assert.deepEqual(recG.pendingRevoke, [], '4g: no ghost pendingRevoke after the rebuild')
+    assert.deepEqual(recG.history, [], '4g: no ghost history after the rebuild')
+    console.log('4g. corrupt manifest self-heals into a valid v2 view')
+    await mountG.fiber.dispose()
+  }
+
+  // 4h. L2-03: 假账纠正——账面 granted、磁盘无 ACE（真实剥离原语制造）→ 面板
+  //     revoke 对无 ACE 目录幂等成功 → restore 重物化出新 grantedAt。
+  {
+    const homeH = mktemp('dsh-drymount-home-h-')
+    const wsH = mktemp('dsh-drymount-ws-h-')
+    const rootH = mktemp('dsh-drymount-root-h-')
+    const mountH = await mountFreshPolicy({ workspaceRoot: wsH, allowedDirs: [`${rootH}\\**`], home: homeH })
+    mountH.policy.resolve()
+    await mountH.policy._reconcileTail
+    const manifestFileH = join(homeH, 'sandbox-allowlist-grants.json')
+    const readRecordH = () => JSON.parse(readFileSync(manifestFileH, 'utf8')).workspaces[wsH]
+    const grantedAtH0 = readRecordH().roots.find((entry) => entry.path.toLowerCase() === rootH.toLowerCase()).grantedAt
+    const sidH = readRecordH().sid
+    assert.ok(typeof sidH === 'string' && sidH.startsWith('S-1-4-'), '4h precondition: the workspace SID is recorded')
+    // 制造假账：真实剥离原语把 ACE 拿掉（账面仍 granted）
+    const outOfBand = await mountH.policy._revokeAces([rootH], sidH)
+    assert.ok(outOfBand.ok, `4h precondition: the out-of-band strip succeeds, got ${JSON.stringify(outOfBand)}`)
+    const apiH = createApiHandler(mountH.policy)
+    const revokedH = await apiH('revoke', { path: rootH, workspace: wsH })
+    assert.equal(revokedH.ok, true, `4h: revoke over an ACE-less dir is an idempotent success, got ${JSON.stringify(revokedH)}`)
+    assert.ok(revokedH.value.workspaces[wsH].history.some((entry) => entry.path.toLowerCase() === rootH.toLowerCase() && entry.origin === 'excluded'),
+      '4h: the completed revocation is audited as excluded')
+    const restoredH = await apiH('restore', { path: rootH, workspace: wsH })
+    assert.equal(restoredH.ok, true, `4h: restore succeeds, got ${JSON.stringify(restoredH)}`)
+    const restoredEntryH = restoredH.value.workspaces[wsH].roots.find((entry) => entry.path.toLowerCase() === rootH.toLowerCase())
+    assert.ok(restoredEntryH && restoredEntryH.status === 'granted' && typeof restoredEntryH.grantedAt === 'string',
+      '4h: restore re-materializes the root as granted')
+    assert.ok(new Date(restoredEntryH.grantedAt) >= new Date(grantedAtH0), '4h: the restored root carries a fresh grantedAt')
+    console.log('4h. fake-account correction: idempotent revoke + restore with a fresh grantedAt')
+    await mountH.fiber.dispose()
+  }
+
+  // 4i. L2-04: failed 行「重试授权」——接缝夹具（方案 B）。真实 ACL 夹具（方案 A）
+  //     要求目录 DACL 对当前令牌不可写：自建目录的所有者隐式持有 WRITE_DAC，非提
+  //     升环境无法确定性地制造，且收权后清理自身也会失败留残留——故经 _grants 接
+  //     缝注入失败/成功 grant 验证记账与重试链路（真实 Win32 错误文案路径不在本
+  //     用例覆盖面，执行报告有注）。
+  {
+    const homeI = mktemp('dsh-drymount-home-i-')
+    const wsI = mktemp('dsh-drymount-ws-i-')
+    const rootI = mktemp('dsh-drymount-root-i-')
+    const mountI = await mountFreshPolicy({ workspaceRoot: wsI, allowedDirs: [`${rootI}\\**`], home: homeI })
+    const policyI = mountI.policy
+    const manifestFileI = join(homeI, 'sandbox-allowlist-grants.json')
+    const readRecordI = () => JSON.parse(readFileSync(manifestFileI, 'utf8')).workspaces[wsI]
+    // 首次物化前注入必抛的 grant：记账走 failed 分支（failed 根不在 skip-set，逐次重试）
+    policyI._grants.set(wsI, {
+      add() { throw new Error('simulated Win32 5: ACCESS_DENIED (seam fixture, plan B)') },
+      dispose() {},
+    })
+    policyI.resolve()
+    await policyI._reconcileTail
+    const entryI = readRecordI().roots.find((entry) => entry.path.toLowerCase() === rootI.toLowerCase())
+    assert.ok(entryI, '4i: the root has a record')
+    assert.equal(entryI.status, 'failed', '4i: the failing grant records status=failed')
+    assert.ok(String(entryI.error).includes('simulated'), `4i: the error text is recorded, got ${entryI.error}`)
+    assert.ok(typeof entryI.errorAt === 'string' && entryI.attempts >= 1, '4i: errorAt + attempts are recorded')
+    // 修复后走面板「重试授权」（API grant）→ granted + 记账清理
+    policyI._grants.set(wsI, { add() {}, dispose() {} })
+    const apiI = createApiHandler(policyI)
+    const retryI = await apiI('grant', { path: rootI, workspace: wsI })
+    assert.equal(retryI.ok, true, `4i: the retry grant succeeds via api, got ${JSON.stringify(retryI)}`)
+    const retriedI = retryI.value.workspaces[wsI].roots.find((entry) => entry.path.toLowerCase() === rootI.toLowerCase())
+    assert.ok(retriedI && retriedI.status === 'granted', '4i: the retry reads back a granted record')
+    assert.ok(typeof retriedI.grantedAt === 'string', '4i: the retry grants a fresh grantedAt')
+    assert.equal(retriedI.error, null, '4i: the error is cleared on success')
+    assert.equal(retriedI.attempts, 0, '4i: attempts reset on success')
+    console.log('4i. failed-row retry grant: failed accounting → repaired → granted via api (seam fixture)')
+    await mountI.fiber.dispose()
+  }
+
+  // 4j. L2-05: workspace 解析优先级——显式 workspace > sessionCwd 命中 > 实例根。
+  //     注意 state 的 current 只走 sessionCwd→实例根（显式 workspace 只作用于
+  //     revoke/restore/grant 的目标选择），因此「显式最高」用操作断言而非 current。
+  {
+    const homeJ = mktemp('dsh-drymount-home-j-')
+    const wsJA = mktemp('dsh-drymount-ws-ja-')
+    const wsJB = mktemp('dsh-drymount-ws-jb-')
+    const rootJA = mktemp('dsh-drymount-root-ja-')
+    const rootJB = mktemp('dsh-drymount-root-jb-')
+    // 预置双工作区 v2 清单：B 键先有一条 granted 记录（A 键交给启动对账补齐）
+    writeFileSync(join(homeJ, 'sandbox-allowlist-grants.json'), JSON.stringify({
+      workspaces: {
+        [wsJB]: {
+          sid: null, updatedAt: null,
+          roots: [{ path: rootJB, status: 'granted', grantedAt: '2026-10-01T00:00:00.000Z', fromPatterns: [], triggeredBy: '', excluded: false, error: null, errorAt: null, attempts: 0 }],
+          pendingRevoke: [], history: [],
+        },
+      },
+    }), 'utf8')
+    const mountJ = await mountFreshPolicy({ workspaceRoot: wsJA, allowedDirs: [`${rootJA}\\**`], home: homeJ })
+    mountJ.policy.resolve()
+    await mountJ.policy._reconcileTail
+    const apiJ = createApiHandler(mountJ.policy)
+    // ① sessionCwd 命中 → state.current 解析到该工作区
+    const hitJ = await apiJ('state', { sessionCwd: wsJB })
+    assert.equal(hitJ.ok, true)
+    assert.equal(hitJ.value.current, wsJB, 'a sessionCwd hit resolves current to that workspace')
+    assert.ok(hitJ.value.workspaces[wsJB] && hitJ.value.workspaces[wsJA], 'both workspace slices are served')
+    // ② sessionCwd 未命中 → 兜底实例根
+    const missJ = await apiJ('state', { sessionCwd: join(homeJ, 'no-such-ws') })
+    assert.equal(missJ.value.current, wsJA, 'an unmatched sessionCwd falls back to the instance root')
+    // ③ 显式 workspace 压过 sessionCwd：操作落 A，B 不动
+    const explicitJ = await apiJ('revoke', { path: rootJA, workspace: wsJA, sessionCwd: wsJB })
+    assert.equal(explicitJ.ok, true, `the explicit workspace wins, got ${JSON.stringify(explicitJ)}`)
+    assert.ok(explicitJ.value.workspaces[wsJA].history.some((entry) => entry.path.toLowerCase() === rootJA.toLowerCase()),
+      'the explicit-wsA revoke is accounted in wsA')
+    assert.equal(explicitJ.value.workspaces[wsJB].history.length, 0, 'wsB is untouched by the explicit-wsA action')
+    // ④ 无显式参、sessionCwd 命中 → 操作落 B
+    const cwdJ = await apiJ('revoke', { path: rootJB, sessionCwd: wsJB })
+    assert.equal(cwdJ.ok, true, `the sessionCwd hit targets the matched workspace, got ${JSON.stringify(cwdJ)}`)
+    assert.ok(cwdJ.value.workspaces[wsJB].history.some((entry) => entry.path.toLowerCase() === rootJB.toLowerCase()),
+      'the sessionCwd-driven revoke is accounted in wsB')
+    // ⑤ 显式未知工作区 → unknown-workspace
+    const unknownJ = await apiJ('revoke', { path: rootJA, workspace: 'W:\\elsewhere-j' })
+    assert.equal(unknownJ.ok, false)
+    assert.equal(unknownJ.error.code, 'unknown-workspace')
+    console.log('4j. workspace resolution priority: explicit > sessionCwd hit > instance root')
+    await mountJ.fiber.dispose()
+  }
+
   // 5. state-routes 契约（会话区授权面板的 host 半件，自建路由 + 统一信封）：
   //    注入捕获型 fake webServer 验证注册形状，并直驱 createApiHandler 验证
   //    视图 JSON、payload 校验、错误信封与 revoke/restore/grant 全链路——
@@ -454,6 +701,47 @@ if (process.platform === 'win32') {
     const unknownWs = await api('revoke', { path: rootD, workspace: String.raw`W:\elsewhere` })
     assert.equal(unknownWs.ok, false, 'an unknown workspace is rejected')
     assert.equal(unknownWs.error.code, 'unknown-workspace')
+
+    // L3-02: HTTP 适配层——假 req/res 直驱 handleRequest（经捕获的路由句柄；
+    // handleRequest 未导出，fake webServer 捕获是唯一入口）。契约：HTTP 恒 200
+    // 形状 + 统一信封（成功 {ok,value} / 失败 {ok:false,error{code,message}}）。
+    const httpHandler = captured.route.handler
+    const httpCall = async (verb, url, chunks) => {
+      const req = Readable.from(chunks ?? [])
+      req.method = verb
+      req.url = url
+      const res = {
+        headers: {}, body: null,
+        setHeader(name, value) { this.headers[name.toLowerCase()] = value },
+        end(payload) { this.body = payload },
+      }
+      await httpHandler(req, res)
+      return res
+    }
+    // ① 非 POST → bad-method 信封，状态码从不改写、content-type 恒 JSON
+    const getRes = await httpCall('GET', '/sandbox-allowlist/api/state')
+    assert.equal(getRes.statusCode, undefined, 'the adapter never sets a non-200 status')
+    assert.equal(getRes.headers['content-type'], 'application/json; charset=utf-8')
+    const getEnvelope = JSON.parse(getRes.body)
+    assert.equal(getEnvelope.ok, false)
+    assert.equal(getEnvelope.error.code, 'bad-method')
+    // ② body > 1MB → internal 错误信封
+    const bigRes = await httpCall('POST', '/sandbox-allowlist/api/state', [Buffer.alloc(1024 * 1024 + 1)])
+    const bigEnvelope = JSON.parse(bigRes.body)
+    assert.equal(bigEnvelope.ok, false)
+    assert.equal(bigEnvelope.error.code, 'internal')
+    assert.ok(String(bigEnvelope.error.message).includes('too large'), `got ${JSON.stringify(bigEnvelope.error)}`)
+    // ③ 非法 JSON body → internal 错误信封
+    const badRes = await httpCall('POST', '/sandbox-allowlist/api/state', [Buffer.from('{oops', 'utf8')])
+    const badEnvelope = JSON.parse(badRes.body)
+    assert.equal(badEnvelope.ok, false)
+    assert.equal(badEnvelope.error.code, 'internal')
+    assert.ok(String(badEnvelope.error.message).includes('not valid JSON'), `got ${JSON.stringify(badEnvelope.error)}`)
+    // ④ 空 body POST → 按 {} 处理 → state 正常 ok 信封
+    const emptyRes = await httpCall('POST', '/sandbox-allowlist/api/state', [])
+    const emptyEnvelope = JSON.parse(emptyRes.body)
+    assert.equal(emptyEnvelope.ok, true, 'an empty body reads as {} and serves the state view')
+    assert.equal(emptyEnvelope.value.supported, true)
     console.log('5. state-routes contract (view JSON + api revoke/restore/grant with the real strip) holds')
     await fiberD.dispose()
   }
