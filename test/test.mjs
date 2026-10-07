@@ -93,6 +93,24 @@ import { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
 import { SandboxedFileSystem } from '@deepseek-ai/dsh-fs-sandbox'
 import { LocalSandboxProvider } from '@deepseek-ai/dsh-sandbox-local'
 
+// ── 启动时清扫陈旧夹具 ─────────────────────────────────────────────────────
+// 清理钩子是 best-effort，Windows 上偶发的 rmSync 失败会每轮留下 1~2 个夹具
+// 目录（历史观察）。只扫超过 24h 的同名前缀目录——阈值远大于任何一轮运行时长，
+// 并行运行中的新鲜目录不受影响；清扫失败不影响本次测试。
+{
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000
+  const prefixes = ['dsh-allowlist-', 'dsh-grants-', 'dsh-revoke-tree-', 'dsh-scan-sid-', 'dsh-verify-ace-', 'dsh-drymount-']
+  try {
+    for (const name of readdirSync(tmpdir())) {
+      if (!prefixes.some((prefix) => name.startsWith(prefix))) continue
+      try {
+        const full = join(tmpdir(), name)
+        if (statSync(full).mtimeMs < cutoff) rmSync(full, { recursive: true, force: true })
+      } catch { /* best effort */ }
+    }
+  } catch { /* best effort */ }
+}
+
 // ── pattern matcher ────────────────────────────────────────────────────────
 assert.equal(hasMeta('D:\\Shared\\Tools'), false)
 assert.equal(hasMeta('D:\\Data\\logs\\*'), true)
@@ -333,6 +351,115 @@ assert.match(denyReason('bash', 'rm -rf /'), /deny rule/)
     assert.equal(book.pendingRevoke.length, 0)
   }
 
+  // ── normalizeRecord 容错矩阵（L1-04：经 loadManifest 公共入口驱动，私有函数不导出） ──
+  {
+    const base = mkdtempSync(join(tmpdir(), 'dsh-grants-norm-'))
+    try {
+      const file = manifestPath(base)
+      // roots 非对象项与缺 path 项直接丢弃（VAR-1 修复后契约，与 pendingRevoke/
+      // history 的缺 path 丢弃语义对齐）；合法对象条目收敛为完整记录。
+      writeFileSync(file, JSON.stringify({ workspaces: { W: { roots: [null, 42, 'str', { path: 42 }, { path: 'D:\\ok' }] } } }), 'utf8')
+      const rootsLoaded = loadManifest(file)
+      const rootsRecord = rootsLoaded.workspaces.W
+      assert.deepEqual(rootsRecord.roots, [emptyRootEntry('D:\\ok')], 'non-object and pathless roots items drop; valid items keep the full contract shape')
+      assert.equal(rootsLoaded.needsWriteBack, undefined, 'a v2-shaped value never asks for write-back')
+
+      // pendingRevoke：缺 path 整条丢弃；缺字段用契约默认补齐
+      writeFileSync(file, JSON.stringify({ workspaces: { W: { pendingRevoke: [{ path: 'D:\\p' }, { origin: 'excluded' }] } } }), 'utf8')
+      const pendingRecord = loadManifest(file).workspaces.W
+      assert.deepEqual(pendingRecord.pendingRevoke, [
+        { path: 'D:\\p', fromPatterns: [], origin: 'config-removed', error: null, attempts: 0, lastAttemptAt: null },
+      ], 'pendingRevoke entries fill contract defaults; pathless entries drop')
+
+      // history：缺 path 丢弃；origin 非法值回退 config-removed；revokedAt 缺省 null
+      writeFileSync(file, JSON.stringify({ workspaces: { W: { history: [{ path: 'D:\\h1' }, { origin: 'excluded' }, { path: 'D:\\h2', origin: 'bogus', revokedAt: 't0' }] } } }), 'utf8')
+      const historyRecord = loadManifest(file).workspaces.W
+      assert.deepEqual(historyRecord.history, [
+        { path: 'D:\\h1', revokedAt: null, origin: 'config-removed', fromPatterns: [] },
+        { path: 'D:\\h2', revokedAt: 't0', origin: 'config-removed', fromPatterns: [] },
+      ], 'history entries fill defaults; bogus origins fall back to config-removed')
+
+      // attempts 非数字归 0（Number.isFinite 为真则保留，含小数——宽松行为如实断言）
+      writeFileSync(file, JSON.stringify({ workspaces: { W: { pendingRevoke: [{ path: 'D:\\a1', attempts: 'x' }, { path: 'D:\\a2', attempts: 3.5 }] } } }), 'utf8')
+      const attemptsRecord = loadManifest(file).workspaces.W
+      assert.equal(attemptsRecord.pendingRevoke[0].attempts, 0)
+      assert.equal(attemptsRecord.pendingRevoke[1].attempts, 3.5, 'finite numbers pass through (3.5 kept)')
+
+      // sid/updatedAt 非字符串被丢弃
+      writeFileSync(file, JSON.stringify({ workspaces: { W: { sid: 42, updatedAt: 7, roots: [] } } }), 'utf8')
+      const scalarRecord = loadManifest(file).workspaces.W
+      assert.equal(scalarRecord.sid, null)
+      assert.equal(scalarRecord.updatedAt, null)
+
+      // 整个工作区值为 null/42/字符串 → 空记录 + needsWriteBack
+      writeFileSync(file, JSON.stringify({ workspaces: { W: null, X: 42, Y: 'str' } }), 'utf8')
+      const junkLoaded = loadManifest(file)
+      assert.deepEqual(junkLoaded.workspaces.W, emptyWorkspaceRecord())
+      assert.deepEqual(junkLoaded.workspaces.X, emptyWorkspaceRecord())
+      assert.deepEqual(junkLoaded.workspaces.Y, emptyWorkspaceRecord())
+      assert.equal(junkLoaded.needsWriteBack, true, 'junk workspace values flag a write-back')
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  }
+
+  // ── isExcludedPath 三处命中（L1-05） ─────────────────────────────────────
+  {
+    const rootsExcluded = emptyWorkspaceRecord()
+    ensureRootEntry(rootsExcluded, 'D:\\a').excluded = true
+    assert.equal(isExcludedPath(rootsExcluded, 'D:\\a'), true, 'live excluded flag in roots')
+
+    const pendingExcluded = emptyWorkspaceRecord()
+    enterPendingRevoke(pendingExcluded, { path: 'D:\\b', origin: 'excluded', error: 'e' })
+    assert.equal(isExcludedPath(pendingExcluded, 'D:\\b'), true, 'pending exclusion revocation')
+
+    const historyExcluded = emptyWorkspaceRecord()
+    pushHistory(historyExcluded, { path: 'D:\\c', origin: 'excluded' })
+    assert.equal(isExcludedPath(historyExcluded, 'D:\\c'), true, 'completed exclusion in history')
+
+    // 对照组：config-removed 来源不计入排除
+    const notExcluded = emptyWorkspaceRecord()
+    enterPendingRevoke(notExcluded, { path: 'D:\\d', origin: 'config-removed' })
+    pushHistory(notExcluded, { path: 'D:\\e', origin: 'config-removed' })
+    assert.equal(isExcludedPath(notExcluded, 'D:\\d'), false)
+    assert.equal(isExcludedPath(notExcluded, 'D:\\e'), false)
+
+    // 路径同判：win32 折叠分隔符方向与大小写；POSIX 逐字比较。
+    // 注意：comparablePath 不折叠尾分隔符（'D:\C\' → 'd:\c\' ≠ 'd:\c'），
+    // 用例规格 L1-05「尾分隔符归一」的说法与实现不符——按实际契约断言不命中，
+    // 差异登记执行报告 VAR 条目。
+    if (process.platform === 'win32') {
+      assert.equal(isExcludedPath(historyExcluded, 'd:/C'), true, 'separator direction + case fold (win32)')
+      assert.equal(isExcludedPath(historyExcluded, 'D:\\C\\'), false, 'a trailing separator is NOT folded (win32)')
+    } else {
+      assert.equal(isExcludedPath(historyExcluded, 'D:\\c'), true, 'exact spelling hits (POSIX)')
+      assert.equal(isExcludedPath(historyExcluded, 'd:/c'), false, 'no folding on POSIX')
+    }
+  }
+
+  // ── saveManifest 原子落盘（L1-06：目录自建 / 无 .tmp 残留 / 迁移标记不落盘） ──
+  {
+    const base = mkdtempSync(join(tmpdir(), 'dsh-grants-save-'))
+    try {
+      const file = join(base, 'nested', 'deep', MANIFEST_FILE_NAME)
+      const manifest = { version: MANIFEST_VERSION, workspaces: { W: emptyWorkspaceRecord() }, needsWriteBack: true }
+      saveManifest(file, manifest)
+      assert.ok(existsSync(join(base, 'nested', 'deep')), 'missing target directories are created')
+      assert.equal(existsSync(`${file}.tmp`), false, 'no .tmp residue on the happy path')
+      const parsed = JSON.parse(readFileSync(file, 'utf8'))
+      assert.equal(parsed.version, MANIFEST_VERSION, 'written as a valid v2 document')
+      assert.ok(parsed.workspaces.W, 'workspaces pass through')
+      assert.equal('needsWriteBack' in parsed, false, 'the in-memory migration marker never hits the disk')
+      // rename 覆盖同名 .tmp 垃圾文件（两步写的可观测效果）
+      writeFileSync(`${file}.tmp`, 'junk', 'utf8')
+      saveManifest(file, manifest)
+      assert.equal(existsSync(`${file}.tmp`), false, 'a stale .tmp is renamed over')
+      assert.equal(JSON.parse(readFileSync(file, 'utf8')).version, MANIFEST_VERSION)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  }
+
   // ── fromPatterns 审计镜像 + 入史/剔除原语 ─────────────────────────────────
   {
     const record = emptyWorkspaceRecord()
@@ -382,6 +509,10 @@ assert.match(denyReason('bash', 'rm -rf /'), /deny rule/)
       assert.notEqual(writeSidForDirectory(join(dirBase, 'other')), expected, 'another workspace derives another SID')
       // 目录不存在也能重算（工作区已删除的残留识别场景）
       assert.equal(writeSidForDirectory(join(dirBase, 'gone')), writeSidForDirectory(join(dirBase, 'gone')))
+      // L6-03 微补：分隔符方向不影响派生（win32 resolve 归一，POSIX 本就是原生形态）；
+      // 输出形状与 WORKSPACE_SID_SDDL_SOURCE 及文档示例一致
+      assert.equal(writeSidForDirectory(dir.split('\\').join('/')), expected, 'separator direction folds into the same canonical SID')
+      assert.match(writeSidForDirectory(dir), /^S-1-4-\d+-\d+$/, 'the SDDL shape matches the documented S-1-4-<x>-<y> form')
     } finally {
       rmSync(dirBase, { recursive: true, force: true })
     }

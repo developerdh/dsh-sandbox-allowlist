@@ -1708,7 +1708,7 @@ export function makeStatePanel(t: Translate) {
                 <button
                   key={entry.key} className="sabx-panel-filter" type="button"
                   data-active={filter === entry.key ? 'true' : 'false'}
-                  onClick={() => setFilter(entry.key)}
+                  onClick={() => { setFilter(entry.key); setConfirm(null); }}
                 >
                   {entry.label}
                 </button>
