@@ -282,7 +282,18 @@ async function dispatchPre(tool, callId, command) {
 async function dispatchApproval(req, fallback = 'unavailable') {
   return appCtx.waterfall(appCtx, 'approval/request', req, () => Promise.resolve(fallback))
 }
-const escalation = (callId, tool = 'pwsh', reason = 'escalate sandbox to danger-full-access: eslint spawns worker processes over pipes that workspace-write blocks with EPERM; this lint run needs the wider sandbox.') => ({ toolName: tool, callId, reason })
+const escalation = (callId, tool = 'pwsh', justification = 'eslint spawns worker processes over pipes that workspace-write blocks with EPERM; this lint run needs the wider sandbox.') => ({
+  toolName: tool,
+  callId,
+  // Mirror dsh-sandbox's approveEscalation contract exactly: EVERY escalation
+  // request carries the localized displayReason pair, and the client renders
+  // it over `reason` — the gate must enrich both or the prompt stays bare.
+  reason: `escalate sandbox to danger-full-access: ${justification}`,
+  displayReason: {
+    en: `Allow this operation with danger-full-access permissions: ${justification}`,
+    zh: `允许本次操作使用 danger-full-access 权限：${justification}`,
+  },
+})
 
 // an allow rule carries the escalation grant: the upgrade is auto-approved
 await dispatchPre('pwsh', 'call-1', 'pnpm lint 2>&1 | Select-Object -Last 20')
@@ -298,6 +309,12 @@ await dispatchPre('pwsh', 'call-2', 'pnpm lint 2>&1 | npx whoami')
 assert.equal(await dispatchApproval(rider), 'unavailable', 'a rider statement blocks the automatic answer')
 assert.match(rider.reason, /\[sandbox-allowlist\]/, 'the manual prompt carries the explanation')
 assert.match(rider.reason, /未自动放行沙箱升级/, 'and says why it was not automatic')
+// The client renders displayReason over reason (dsh 0.2.0 contract): the
+// explanation must ride the localized pair too, or the prompt shows only the
+// host template (real-machine regression: the audit engaged, the dialog stayed bare).
+assert.match(rider.displayReason.zh, /\[sandbox-allowlist\]/, 'the zh display reason carries the explanation')
+assert.match(rider.displayReason.zh, /未自动放行沙箱升级/, 'and says why it was not automatic (zh)')
+assert.match(rider.displayReason.en, /\[sandbox-allowlist\]/, 'the en display reason carries it too')
 
 // a noRead-protected target must never ride an escalation (the wider mode
 // lifts the read fence)
