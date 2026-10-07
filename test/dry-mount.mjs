@@ -48,7 +48,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -83,13 +83,25 @@ process.on('exit', () => {
   try { rmSync(process.env.DSH_HOME, { recursive: true, force: true }) } catch { /* best effort */ }
   for (const dir of created) { try { rmSync(dir, { recursive: true, force: true }) } catch { /* best effort */ } }
 })
+// Policy output (extraRoots, manifest entries, panel views) carries the host's
+// canonicalPath() spelling (realpathSync.native with as-is fallback), while
+// tmpdir() on GitHub runners yields the Windows 8.3 short form
+// (C:\Users\RUNNER~1\...) — raw fixture spellings never equal policy output
+// off a dev machine. Fixtures go through the same canonicalization.
+const canon = (p) => {
+  try {
+    return realpathSync.native(p)
+  } catch {
+    return p
+  }
+}
 const mktemp = (prefix) => {
-  const dir = mkdtempSync(join(tmpdir(), prefix))
+  const dir = canon(mkdtempSync(join(tmpdir(), prefix)))
   created.push(dir)
   return dir
 }
-const WORKSPACE = process.env.DSH_TEST_WORKSPACE ?? mktemp('dsh-drymount-ws-')
-const TRUSTED = process.env.DSH_TEST_TRUSTED ?? mktemp('dsh-drymount-trust-')
+const WORKSPACE = process.env.DSH_TEST_WORKSPACE ? canon(process.env.DSH_TEST_WORKSPACE) : mktemp('dsh-drymount-ws-')
+const TRUSTED = process.env.DSH_TEST_TRUSTED ? canon(process.env.DSH_TEST_TRUSTED) : mktemp('dsh-drymount-trust-')
 // A second trusted root for the runtime-grant persistence regression check
 // (section 2b): it joins the allowlist only AFTER the first resolve, the way
 // a settings save mutates the volatile array in place.
@@ -153,7 +165,7 @@ const policy = ctx.sandboxPolicy.resolve()
 assert.equal(policy.mode, 'workspace-write')
 assert.ok(
   Array.isArray(policy.extraRoots) && policy.extraRoots.some((root) => root.toLowerCase() === TRUSTED.toLowerCase()),
-  `extraRoots contains the trusted root, got ${JSON.stringify(policy.extraRoots)}`,
+  `extraRoots contains the trusted root ${TRUSTED}, got ${JSON.stringify(policy.extraRoots)}`,
 )
 console.log(`resolved policy: mode=${policy.mode} extraRoots=${JSON.stringify(policy.extraRoots)}`)
 

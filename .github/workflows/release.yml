@@ -66,6 +66,10 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # prepublishOnly 会在发布前重跑全套测试，与 Test 步骤同样需要长路径
+          # TEMP/TMP：runner 默认的 8.3 短路径会让 dry-mount 的路径规范化断言失败
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           if npm view "dsh-sandbox-allowlist@$VERSION" version >/dev/null 2>&1; then
