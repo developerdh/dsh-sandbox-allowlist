@@ -82,7 +82,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ARGS=()
-          case "${GITHUB_REF_NAME}" in *-*) ARGS+=(--prerelease);; esac # 0.2.0-beta.1 → 预发布
+          case "${GITHUB_REF_NAME}" in *-*) ARGS+=(--prerelease);; esac # 0.2.1-beta.1 → 预发布
 
           # Release 正文 = 附注 tag 上的版本说明（打 annotated tag 可带说明）+ 更新内容 + 安装方式。
           # 「更新内容」只在存在上一个 tag 时生成：首个 tag 没有可比基线，
