@@ -16,7 +16,7 @@ All three are edited visually in the settings page and take effect on save. Wind
 (ACL sandbox) is verified on real machines; Linux (bwrap) is implemented but **not yet
 real-machine verified**.
 
-> Current version `v0.2.0-beta.1`, compatibility baseline dsh `0.2.0-rc.2`.
+> Current version `v0.2.1-beta.1`, compatibility baseline dsh `0.2.0-rc.2`.
 
 ## Install
 

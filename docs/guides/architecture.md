@@ -3,7 +3,7 @@
 > 语言切换：[English](architecture.en.md) ｜ 简体中文
 >
 > 本文说明本插件的工作原理、安全边界与已知限制。三类规则的使用方法见
-> [权限规则指南](permission-rules.md)。适用版本 `v0.2.0-beta.1`，兼容基线
+> [权限规则指南](permission-rules.md)。适用版本 `v0.2.1-beta.1`，兼容基线
 > dsh `0.2.0-rc.2`。
 
 ## 工作原理

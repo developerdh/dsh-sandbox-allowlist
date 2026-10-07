@@ -4,7 +4,7 @@
 >
 > This document explains how the plugin works, its security boundaries, and its known
 > limitations. For using the three rule kinds, see the
-> [permission rules guide](permission-rules.en.md). Applies to `v0.2.0-beta.1`,
+> [permission rules guide](permission-rules.en.md). Applies to `v0.2.1-beta.1`,
 > compatibility baseline dsh `0.2.0-rc.2`.
 
 ## How it works
