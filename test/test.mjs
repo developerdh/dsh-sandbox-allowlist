@@ -681,6 +681,42 @@ try {
     assert.equal(providerDefault, AllowlistSandboxProvider)
   }
 
+  // ── provider.confine() 异步契约（缺失 await 的 hotfix 回归） ──────────────
+  // LocalSandboxProvider.confine() 是 async（Promise<ConfinedArgv>）。扩展层曾
+  // 直接在未 await 的 Promise 上读 result.argv，只要配置了受信目录，每一次受限
+  // 执行都死于 "Cannot read properties of undefined (reading '0')"（issue #5）。
+  // 平台桩只包住调用本身（默认导出的 win32 判定发生在模块加载期，不受影响）；
+  // runnerCommand 让基类走纯配置路径、不探测运行器，各平台结果确定。
+  {
+    const platform0 = process.platform
+    const provider = Object.create(AllowlistSandboxProvider.prototype)
+    provider.runnerCommand = ['bwrap']
+    provider.configuredRunnerFailureSignatures = ['bwrap: ']
+    provider._unsupportedWarned = false
+    const trustedRoot = join(base, 'notes')
+    const userArgv = ['bash', '-c', 'echo hi']
+    try {
+      Object.defineProperty(process, 'platform', { value: 'linux' })
+      const confined = await provider.confine(userArgv, {
+        mode: 'workspace-write',
+        workspaceRoot: base,
+        extraRoots: [trustedRoot],
+      })
+      assert.equal(confined.argv[0], 'bwrap', 'bwrap stays the runner')
+      const separator = confined.argv.indexOf('--')
+      assert.ok(separator > 0, 'confined argv keeps the -- separator')
+      assert.deepEqual(confined.argv.slice(separator + 1), userArgv, 'user argv rides after -- untouched')
+      const profile = confined.argv.slice(0, separator)
+      assert.ok(
+        profile.some((arg, i) => arg === '--bind' && profile[i + 1] === trustedRoot && profile[i + 2] === trustedRoot),
+        'each trusted root lands in the bwrap profile as --bind root root',
+      )
+      assert.equal(confined.enforcement, 'full')
+    } finally {
+      Object.defineProperty(process, 'platform', { value: platform0 })
+    }
+  }
+
   // ── settings form projection (host `volatileForm` drift guard) ───────────
   // The host projects ONLY `.volatile()` fields into the served settings form
   // and skips entries whose projection is empty — an unmarked rule field
