@@ -53,14 +53,6 @@
     "tsdown": "^0.7.0",
     "typescript": "^5.9.0"
   },
-  "overrides": {
-    "@deepseek-ai/schemastery": "~3.18.4"
-  },
-  "pnpm": {
-    "overrides": {
-      "@deepseek-ai/schemastery": "~3.18.4"
-    }
-  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
