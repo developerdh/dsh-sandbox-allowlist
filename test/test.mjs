@@ -556,6 +556,34 @@ try {
   assert.ok(!children.has(deep), '* excludes grandchildren')
   assert.ok(!children.has(shared), '* excludes the parent')
 
+  // segment pruning: a literal-anchored wildcard must not walk the whole
+  // anchor tree — only entries matching the tail segment get descended into,
+  // and a directory that consumed the last segment is never traversed deeper.
+  {
+    let reads = 0
+    const readdir = (dir, opts) => {
+      reads += 1
+      return readdirSync(dir, opts)
+    }
+    const pruned = new Set(expandTrustedRoots(join(shared, 'a*'), { readdir }))
+    assert.ok(pruned.has(join(shared, 'a')), 'segment match still found')
+    assert.ok(!pruned.has(join(shared, 'b')) && !pruned.has(join(shared, 'b', 'c')), 'non-matching subtrees excluded')
+    assert.ok(reads <= 2, `pruned walk reads at most anchor+match dirs, got ${reads}`)
+  }
+  // literal tail segment prunes harder: `data\*` descends only into `data`
+  {
+    let reads = 0
+    const readdir = (dir, opts) => {
+      reads += 1
+      return readdirSync(dir, opts)
+    }
+    const nested = join(shared, 'data')
+    mkdirSync(join(nested, 'x'), { recursive: true })
+    const children = new Set(expandTrustedRoots(join(shared, 'data', '*'), { readdir }))
+    assert.ok(children.has(join(nested, 'x')), 'nested child still matched')
+    assert.ok(reads <= 2, `literal-anchored walk reads at most anchor+nested, got ${reads}`)
+  }
+
   // missing literal → empty, never an error
   assert.deepEqual(expandTrustedRoots(join(base, 'Nope')), [])
 
