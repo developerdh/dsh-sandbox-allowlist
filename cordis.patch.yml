@@ -12,7 +12,7 @@
 # The patch swaps the stock sandbox rows for this package's own:
 #   - `sandbox-policy`  -> policy.mjs   (trusted roots + settings namespace)
 #   - `fs-sandbox`      -> fs.mjs       (write/edit fence honors extraRoots)
-#   - `sandbox`         -> provider.mjs (Linux only: bwrap bind extension)
+#   - `sandbox`         -> provider.mjs (Linux bwrap bind / macOS seatbelt profile extension)
 #
 # Patch semantics (applyEntryPatches): a targeted patch may only override
 # fields — the plugin `name` cannot change — so swapping a plugin means

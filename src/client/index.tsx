@@ -1820,7 +1820,7 @@ export function apply(ctx: ClientContext) {
     id: 'sandbox-allowlist-policy-config',
     key: ROW_CONFIG_KEY,
   }, bundleConfig))
-  // provider 行的平台提示：详情页标题旁的「仅 Linux 生效」徽标 + 行说明页。
+  // provider 行的平台提示：详情页标题旁的「Linux / macOS 生效」徽标 + 行说明页。
   // 行页的存在本身由这条 row.config 注册打开（没有配置页的行不生成详情页），
   // 页面里渲染平台边界说明——Windows 上即使启用也只是空转（见 provider.mjs）。
   ctx.slots.inject('plugins.detail.badge', () => ctx.slots.register({

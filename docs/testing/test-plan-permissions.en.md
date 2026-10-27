@@ -391,6 +391,14 @@ the session's AI is asked to run) → **expected observation**.
 | C7 | run `echo test > <test directory>/outside/a.txt` (unauthorized directory) | the sandbox refuses → the AI automatically retries with sandbox_permissions → an **escalation approval** prompt appears containing the `[sandbox-allowlist]` explanation (out-of-bounds write, track 2) and a suggested rule; **choose reject** |
 | C8 | temporarily configure `allowedDirs` as `[ '<test directory>\allowed' ]`, then run `echo test > <test directory>/allowed/a.txt` | succeeds directly, **with no approval at all** — once the directory is authorized the sandbox allows it directly and no escalation request is produced at all ("authorizing by path beats command rules") |
 
+> Platform differences: on Windows C8 additionally materializes the workspace SID's
+> inherited write ACE on the directory (visible via `icacls`), reclaimed automatically once
+> the entry is removed; on macOS (Seatbelt) the directory is appended to the `sandbox-exec`
+> profile instead, and interception resumes on the next command after removal — there is no
+> ACE to observe; on Linux (bwrap) it appends `--bind`. On macOS resolve fixture paths with
+> `realpath` before asserting (`/tmp` is a symlink) and keep asserting that unauthorized
+> directories stay intercepted.
+
 ### 4.4 Read restrictions (tool layer)
 
 With the §4.1 noRead rules configured, have the AI operate on `<test directory>\secret` using
