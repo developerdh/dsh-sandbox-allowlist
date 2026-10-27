@@ -88,7 +88,7 @@ import {
 } from '../lib/grant-manifest.mjs'
 import AllowlistPolicyService, { SETTINGS_ENTRY_ID, AllowlistSettingsSchema, CommandRuleSchema, CommandSettingsSchema } from '../lib/policy.mjs'
 import AllowlistFileSystem from '../lib/fs.mjs'
-import providerDefault, { AllowlistSandboxProvider } from '../lib/provider.mjs'
+import providerDefault, { AllowlistSandboxProvider, appendSeatbeltRoots } from '../lib/provider.mjs'
 import { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
 import { SandboxedFileSystem } from '@deepseek-ai/dsh-fs-sandbox'
 import { LocalSandboxProvider } from '@deepseek-ai/dsh-sandbox-local'
@@ -745,6 +745,89 @@ try {
     }
   }
 
+  // ── provider: macOS Seatbelt profile append ───────────────────────────────
+  // 契约：core 把命令包成 `sandbox-exec -p <SBPL profile> -- ...用户 argv`，
+  // profile 是普通字符串，SBPL 后写覆盖先写。追加必须落在 profile 末尾、`--`
+  // 之前，且只认 `--` 之前的 `-p`（用户命令自带 `-p` 时不得改坏原命令）。
+  {
+    const profile = '(version 1) (allow default) (deny file-write*) (allow file-write* (literal "/dev/null"))'
+    const userArgv = ['bash', '-c', 'echo hi']
+    const seatbeltArgv = ['sandbox-exec', '-p', profile, '--', ...userArgv]
+
+    // 正常追加：权限规则拼在 profile 末尾，argv 其余位置不变
+    const roots = [join(base, 'notes'), join(base, 'with space')]
+    const extended = appendSeatbeltRoots(seatbeltArgv, roots)
+    assert.notEqual(extended, seatbeltArgv, 'append returns a new argv')
+    assert.equal(extended[0], 'sandbox-exec', 'runner stays sandbox-exec')
+    const extendedProfile = extended[extended.indexOf('-p') + 1]
+    assert.ok(extendedProfile.startsWith(profile), 'stock profile is kept as the prefix')
+    for (const root of roots) {
+      assert.ok(
+        extendedProfile.includes(`(allow file-write* (subpath "${root}"))`),
+        `trusted root lands in the SBPL profile: ${root}`,
+      )
+    }
+    assert.deepEqual(extended.slice(extended.indexOf('--')), ['--', ...userArgv], 'user argv stays after -- untouched')
+
+    // 路径含引号/反斜杠：按 core 的 SBPL 转义规则（先反斜杠、再引号）
+    const tricky = appendSeatbeltRoots(seatbeltArgv, ['/tmp/a"b', '/tmp/c\\d'])
+    const trickyProfile = tricky[tricky.indexOf('-p') + 1]
+    assert.ok(trickyProfile.includes('(subpath "/tmp/a\\"b")'), 'double quotes are escaped')
+    assert.ok(trickyProfile.includes('(subpath "/tmp/c\\\\d")'), 'backslashes are escaped')
+
+    // 形状不认识：原样返回（新 argv 都不造），绝不改坏沙箱
+    for (const [label, argv] of [
+      ['no -- separator', ['sandbox-exec', '-p', profile, ...userArgv]],
+      ['no -p', ['sandbox-exec', '--', ...userArgv]],
+      ['-p only in the user argv', ['sandbox-exec', '--', 'ls', '-p']],
+      ['-p with no profile token', ['sandbox-exec', '-p', '--', ...userArgv]],
+      ['empty roots', seatbeltArgv],
+    ]) {
+      const untouched = appendSeatbeltRoots(argv, label === 'empty roots' ? [] : roots)
+      assert.equal(untouched, argv, `unrecognized shape returns the argv untouched: ${label}`)
+    }
+
+    // provider.confine 分支：只在 workspace-write + 有授权目录时追加
+    const platform0 = process.platform
+    const originalConfine = LocalSandboxProvider.prototype.confine
+    const provider = Object.create(AllowlistSandboxProvider.prototype)
+    provider._unsupportedWarned = false
+    provider._seatbeltShapeWarned = false
+    const warnings = []
+    provider.ctx = { logger: { warn: (message) => warnings.push(message) } }
+    LocalSandboxProvider.prototype.confine = async () => ({ argv: seatbeltArgv.slice(), enforcement: 'full' })
+    try {
+      Object.defineProperty(process, 'platform', { value: 'darwin' })
+      const trustedRoot = join(base, 'mac-notes')
+      const confined = await provider.confine(userArgv, {
+        mode: 'workspace-write',
+        workspaceRoot: base,
+        extraRoots: [trustedRoot],
+      })
+      assert.ok(
+        confined.argv[confined.argv.indexOf('-p') + 1].includes(`(subpath "${trustedRoot}")`),
+        'seatbelt profile carries the trusted root under workspace-write',
+      )
+      assert.equal(warnings.length, 0, 'supported runner logs no unsupported warning')
+
+      const readOnly = await provider.confine(userArgv, { mode: 'read-only', workspaceRoot: base, extraRoots: [trustedRoot] })
+      assert.deepEqual(readOnly.argv, seatbeltArgv, 'read-only mode is left untouched')
+
+      const noRoots = await provider.confine(userArgv, { mode: 'workspace-write', workspaceRoot: base, extraRoots: [] })
+      assert.deepEqual(noRoots.argv, seatbeltArgv, 'no trusted roots leaves the argv untouched')
+
+      // core 换形态：保持 stock profile + 一次性告警，且只告警一次
+      LocalSandboxProvider.prototype.confine = async () => ({ argv: ['sandbox-exec', '--', ...userArgv], enforcement: 'full' })
+      const shaped = await provider.confine(userArgv, { mode: 'workspace-write', workspaceRoot: base, extraRoots: [trustedRoot] })
+      assert.deepEqual(shaped.argv, ['sandbox-exec', '--', ...userArgv], 'unrecognized seatbelt shape keeps the stock invocation')
+      assert.equal(warnings.length, 1, 'shape mismatch warns exactly once')
+      assert.ok(warnings[0].includes('unrecognized "sandbox-exec" invocation'), 'warning names the unrecognized shape')
+    } finally {
+      LocalSandboxProvider.prototype.confine = originalConfine
+      Object.defineProperty(process, 'platform', { value: platform0 })
+    }
+  }
+
   // ── settings form projection (host `volatileForm` drift guard) ───────────
   // The host projects ONLY `.volatile()` fields into the served settings form
   // and skips entries whose projection is empty — an unmarked rule field
@@ -781,7 +864,12 @@ try {
       }
     }
     const providerEn = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'lib', 'meta', 'provider', 'locale', 'en.json'), 'utf8')).meta.description
-    assert.ok(providerEn.includes('bwrap') && providerEn.includes('Windows'), 'provider description states its platform limitation')
+    const providerZh = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'lib', 'meta', 'provider', 'locale', 'zh.json'), 'utf8')).meta.description
+    assert.ok(
+      providerEn.includes('bwrap') && providerEn.includes('macOS') && providerEn.includes('Windows'),
+      'provider description states its platform limitation (Linux bwrap, macOS seatbelt, Windows inert)',
+    )
+    assert.ok(providerZh.includes('bwrap') && providerZh.includes('macOS'), 'zh provider description mirrors the platform limitation')
   }
 
   // Config schema: parses a full config and applies defaults

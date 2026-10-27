@@ -32,13 +32,18 @@ environment is needed —
 | `DSH_INSTALL_ANCHOR` | dsh install anchor needed by test:patch to compose a real web profile | **none (required)** |
 | `DHS_INSTALL_ANCHOR` | install anchor the resolve-hook uses to resolve @deepseek-ai/* | the repository's own node_modules |
 
-Real-machine verification points (**Windows**; the Linux bwrap path is not yet
+Real-machine verification points (**Windows / macOS**; the Linux bwrap path is not yet
 real-machine verified): a confined pwsh / the write tool should succeed writing
 an authorized directory with no approval; writing an out-of-workspace **untrusted**
-directory should still be intercepted (`FS_SANDBOX_DENIED`); `icacls <dir>` should show the
-workspace SID `S-1-4-...` with a `(OI)(CI)(W,D,DC)` ACE; after deleting that directory in
-the settings page and saving, the same `icacls` output should no longer show that ACE
-(including inherited copies in subdirectories) — revoking means reclaiming. For a complete
+directory should still be intercepted (`FS_SANDBOX_DENIED`). On Windows additionally
+`icacls <dir>` should show the workspace SID `S-1-4-...` with a `(OI)(CI)(W,D,DC)` ACE;
+after deleting that directory in the settings page and saving, the same `icacls` output
+should no longer show that ACE (including inherited copies in subdirectories) — revoking
+means reclaiming. On macOS additionally a `touch` through the bash tool inside an
+authorized directory must succeed with no approval while an unauthorized directory stays
+intercepted; the startup log must no longer carry the "cannot extend its write allow-list"
+warning; `read-only` / `danger-full-access` behavior is unchanged; fixture paths are
+`realpath`-resolved before asserting (`/tmp` is a symlink). For a complete
 in-session validation script see the
 [permission configuration test plan](testing/test-plan-permissions.en.md).
 
@@ -77,9 +82,9 @@ rendered between the description and the row list on the bundle page) and
 a "Configure" entry) — both backed by the same data as the settings-page section. The
 `summary` view (under the official card title / as the row description fallback) returns a
 one-line summary. The provider row additionally registers platform notices: the
-`plugins.detail.badge` badge on the detail page ("Linux only") plus a row explanation page
-(opened via `row.config`, describing the behavior on Linux/Windows/macOS) — together with
-provider.mjs's inert behavior on Windows, enabling it on the wrong platform no longer
+`plugins.detail.badge` badge on the detail page ("Linux / macOS") plus a row explanation
+page (opened via `row.config`, describing the behavior on Linux/Windows/macOS) — together
+with provider.mjs's inert behavior on Windows, enabling it on the wrong platform no longer
 raises an error; it just explains itself.
 
 ## Row display metadata
@@ -90,8 +95,8 @@ address). `lib/fs.mjs` and `lib/provider.mjs` are subpath specifiers, so their z
 descriptions live in `lib/meta/<row>/locale/`, mapped by exact `exports` keys in
 package.json to `<row-address>/locale/*.json`; the locale directory may only contain
 language-named JSON files (app boot errors on any other file name). The provider row
-description states the platform restriction explicitly (Linux bwrap only, inert on
-Windows).
+description states the platform restriction explicitly (Linux bwrap and macOS seatbelt
+extend, inert on Windows, landlock unsupported).
 
 ## volatile contract (do not remove)
 
@@ -128,7 +133,7 @@ lib/command-approval-gate.mjs  approval/request gate: escalation-phase verdict +
 lib/read-deny.mjs   read-restriction rule engine (file-name/path matching + deny/ask, pure functions)
 lib/read-gate.mjs   tools/pre-execute interception gate: deny/ask decisions for read/read_image/edit
 lib/fs.mjs          replaces fs-sandbox: write/edit fence admitting extraRoots + noRead read enforcement layer
-lib/provider.mjs    replaces sandbox (Linux only): bwrap --bind extension
+lib/provider.mjs    replaces sandbox: Linux bwrap --bind / macOS seatbelt profile extension
 lib/meta/           row display metadata (zh/en descriptions for fs/provider, exports-mapped
                     to <row-address>/locale/*.json for the plugin manager)
 lib/patterns.mjs    wildcard matching and directory expansion (shared)

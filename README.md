@@ -11,8 +11,8 @@ DSH（DeepSeek Harness）沙箱扩展插件：在官方沙箱之上增加三类�
 | **命令放行** `commands` | 命令审批太烦或太松 | 按命令模式 allow / ask / deny，复合命令逐段判定 |
 | **禁读规则** `noRead` | 不想被模型读到 | 按文件名/路径 deny 硬拦，或 ask 审批后放行 |
 
-三类规则在设置页可视化编辑，保存实时生效。Windows（ACL 沙箱）已在真机验证；
-Linux（bwrap）已实现、**尚未真机验证**。
+三类规则在设置页可视化编辑，保存实时生效。Windows（ACL 沙箱）与 macOS（Seatbelt）
+已在真机验证；Linux（bwrap）已实现、**尚未真机验证**。
 
 > 当前版本 `v0.2.1-beta.2`，兼容基线 dsh `0.2.0-rc.2`。
 
@@ -77,7 +77,8 @@ dsh plugin --profile web add /tmp/pkg/dsh-sandbox-allowlist-*.tgz
 
 沙箱的可写范围是一个允许清单，本插件向清单**追加授权目录**：Windows 上物化
 工作区写 SID 的继承式写 ACE（撤销即自动回收，对账清单持久化）；Linux 上给
-`bwrap` 追加 `--bind`。原理、安全设计与对账机制详见
+`bwrap` 追加 `--bind`；macOS 上给 `sandbox-exec` 的 Seatbelt profile 追加
+`(allow file-write* (subpath "<目录>"))`。原理、安全设计与对账机制详见
 [架构与安全边界](docs/guides/architecture.md)。
 
 ## 安全边界（务必阅读）
@@ -94,7 +95,11 @@ dsh plugin --profile web add /tmp/pkg/dsh-sandbox-allowlist-*.tgz
 
 - Windows：授权目录必须已存在且归当前用户所有；残留 ACE 可用
   `node scripts/revoke.mjs` 应急清理（通常无需使用）。
-- Linux：`bwrap` 路径已实现但**尚未真机验证**；`landlock`/`seatbelt` 不支持。
+- Linux：`bwrap` 路径已实现但**尚未真机验证**；`landlock` 不支持。
+- macOS：追加依赖 core「profile 经 `-p` 传入」的形态；core 改变拼装方式时退回
+  原生 profile 并告警一次。`sandbox-exec` 已被 Apple 标记弃用（当前仍可用），
+  未来系统版本可能失效。
+- 授权目录必须真实存在（Seatbelt 按 realpath 匹配，软链会被解析到真实路径）。
 - write/edit 工具只在 `workspace-write` 模式放行授权目录。
 - 运行中启停插件若遇异常，处置见
   [已知问题](docs/issues/ki-1-session-controller-reload-race.md)。
