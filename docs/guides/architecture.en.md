@@ -23,6 +23,14 @@ directories** to that list:
   persisted at `$DSH_HOME/sandbox-allowlist-grants.json`; even edits made while the
   process was offline are backfilled on the next start.
 - **Linux**: `bwrap` is extended with `--bind <root> <root>`.
+- **macOS**: core wraps a confined command as
+  `sandbox-exec -p <SBPL profile> -- <original command>`. The provider appends
+  `(allow file-write* (subpath "<directory>"))` to the end of the profile; SBPL lets the
+  last matching rule win, so the stock `deny file-write*` stays in force outside the
+  workspace and the authorized directories. The profile is a plain argv string, so no
+  core-private builder is needed; authorized directories are canonicalized through
+  realpath in `policy.mjs` (Seatbelt matches resolved paths — `/tmp` and `/private/tmp`
+  are the same place).
 
 ## Security boundaries (must read)
 
@@ -79,7 +87,11 @@ directories** to that list:
   ACEs remain, `node scripts/revoke.mjs` cleans them up in an emergency (normally
   unnecessary).
 - **Linux**: the `bwrap` path is implemented but not yet real-machine verified;
-  `landlock`/`seatbelt` are not supported.
+  `landlock` is not supported.
+- **macOS**: the append relies on the core shape "the profile rides `-p`"; if that shape
+  changes, the stock profile is kept and a one-time warning is logged (the sandbox stays
+  effective, only the authorized directories are not). `sandbox-exec` is deprecated by
+  Apple — still functional on current systems, may stop working in a future version.
 - The write/edit tools only admit authorized directories in `workspace-write` mode.
 - noRead `ask` rules only apply to the read / read_image / edit tools; a write that
   overwrites an old file is only intercepted by `deny` rules at the fs layer, creation

@@ -30,11 +30,14 @@ npm run test:patch           # 补丁组合预检（需先设 DSH_INSTALL_ANCHOR
 | `DSH_INSTALL_ANCHOR` | test:patch 组合真实 web profile 所需的 dsh 安装锚点 | **无（必填）** |
 | `DHS_INSTALL_ANCHOR` | resolve-hook 解析 @deepseek-ai/* 的安装锚点 | 仓库自身 node_modules |
 
-真机验证要点（**Windows**；Linux 的 bwrap 路径尚未真机验证）：受限 pwsh / write
-工具写授权目录应成功且无审批；写工作区外**非**
-可信目录应仍被拦截（`FS_SANDBOX_DENIED`）；`icacls <dir>` 应能看到工作区 SID
+真机验证要点（**Windows / macOS**；Linux 的 bwrap 路径尚未真机验证）：受限 pwsh /
+write 工具写授权目录应成功且无审批；写工作区外**非**可信目录应仍被拦截
+（`FS_SANDBOX_DENIED`）。Windows 另需 `icacls <dir>` 能看到工作区 SID
 `S-1-4-...` 的 `(OI)(CI)(W,D,DC)` ACE；在设置页删除该目录并保存后，同一 `icacls`
-输出中该 ACE（含子目录继承副本）应消失——撤销即回收。完整的会话内验证脚本见
+输出中该 ACE（含子目录继承副本）应消失——撤销即回收。macOS 另需：bash 工具在授权
+目录内 `touch` 成功且无审批，未授权目录仍被拦；启动日志不再出现
+「cannot extend its write allow-list」告警；`read-only` / `danger-full-access` 模式
+行为不变；夹具路径先 `realpath` 再断言（`/tmp` 是软链）。完整的会话内验证脚本见
 [权限配置测试计划](testing/test-plan-permissions.md)。
 
 ## 设置页客户端
@@ -66,7 +69,7 @@ client 半件除设置页分节外，还向插件详情页注册两个官方配�
 `plugins.row.config`（key=`<包名>#sandbox-allowlist-policy`，策略行获得「配置」
 入口），两者与设置页「沙箱授权」分节是同一份数据。`summary` 视图（官方卡片标题
 下 / 行描述兜底位）返回一行说明文字。provider 行额外注册了平台提示：详情页
-`plugins.detail.badge` 徽标（「仅 Linux 生效」）+ 行说明页（`row.config` 打开，
+`plugins.detail.badge` 徽标（「Linux / macOS 生效」）+ 行说明页（`row.config` 打开，
 交代 Linux/Windows/macOS 各自的行为）——配合 provider.mjs 在 Windows 上的惰性
 空转，启用错平台时不再出现异常，只有友好说明。
 
@@ -77,7 +80,7 @@ client 半件除设置页分节外，还向插件详情页注册两个官方配�
 是子路径说明符，各自的中英描述放在 `lib/meta/<row>/locale/`，由 package.json
 `exports` 的精确键映射到 `<行地址>/locale/*.json`；locale 目录只能放语言命名的
 JSON（app boot 对其他文件名直接报错）。provider 行描述明确注明平台限制
-（仅 Linux bwrap 生效，Windows 空转）。
+（Linux bwrap 与 macOS seatbelt 生效，Windows 空转，landlock 不支持）。
 
 ## volatile 契约（勿删）
 
@@ -111,7 +114,7 @@ lib/command-approval-gate.mjs  approval/request 门：升级相位判定 + 弹�
 lib/read-deny.mjs   禁读规则引擎（文件名/路径匹配 + deny/ask，纯函数）
 lib/read-gate.mjs   tools/pre-execute 拦截门：read/read_image/edit 的 deny/ask 决策
 lib/fs.mjs          替换 fs-sandbox：write/edit 栅栏放行 extraRoots + noRead 读强制层
-lib/provider.mjs    替换 sandbox（仅 Linux）：bwrap --bind 追加
+lib/provider.mjs    替换 sandbox：Linux bwrap --bind 追加 / macOS seatbelt profile 追加
 lib/meta/           行显示元数据（fs/provider 的中英描述，exports 映射为
                     <行地址>/locale/*.json 供插件管理器读取）
 lib/patterns.mjs    通配符匹配与目录展开（共享）

@@ -18,6 +18,11 @@ DSH 沙箱允许写哪里 = 允许清单（allow-list）。本插件向清单**�
   `$DSH_HOME/sandbox-allowlist-grants.json`，即使进程离线时改过配置，下次启动
   也会自动补齐回收。
 - **Linux**：`bwrap` 追加 `--bind <root> <root>`。
+- **macOS**：core 把受限命令包成 `sandbox-exec -p <SBPL profile> -- <原命令>`。
+  provider 在 profile 末尾追加 `(allow file-write* (subpath "<目录>"))`；SBPL 后写
+  覆盖先写，原生 `deny file-write*` 在工作区与授权目录之外继续生效。profile 是普通
+  argv 字符串，不依赖 core 的私有拼装函数；授权目录在 `policy.mjs` 中已按 realpath
+  规范化（Seatbelt 按解析后的真实路径匹配，`/tmp` 与 `/private/tmp` 是同一处）。
 
 ## 安全边界（务必阅读）
 
@@ -57,7 +62,10 @@ DSH 沙箱允许写哪里 = 允许清单（allow-list）。本插件向清单**�
   已删除的目录直接视为已回收。回收宿主优先系统自带 Windows PowerShell 5.1，
   缺失时回退 PowerShell 7（pwsh）；两者皆缺时回收挂起并告警。若插件被卸载而
   目录残留 ACE，可用 `node scripts/revoke.mjs` 应急清理（通常无需使用）。
-- **Linux**：`bwrap` 路径已实现但尚未真机验证；`landlock`/`seatbelt` 不支持。
+- **Linux**：`bwrap` 路径已实现但尚未真机验证；`landlock` 不支持。
+- **macOS**：追加依赖 core「profile 经 `-p` 传入」的形态；形态变化时退回原生 profile
+  并告警一次（沙箱保持有效，只是授权目录不生效）。`sandbox-exec` 已被 Apple 标记
+  弃用，当前系统仍可用，未来版本可能失效。
 - write/edit 工具只在 `workspace-write` 模式下放行授权目录。
 - noRead 的 `ask` 规则只作用于 read / read_image / edit 工具；write 覆盖旧文件
   只受 `deny` 规则的 fs 层拦截，新建不受限；目录级 `deny` 另拦 listDir。

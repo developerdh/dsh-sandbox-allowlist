@@ -13,8 +13,8 @@ plugin mechanism — **no official package code is modified**.
 | **Read restrictions** `noRead` | certain things must not be read by the model | deny outright by file name/path, or allow once via ask |
 
 All three are edited visually in the settings page and take effect on save. Windows
-(ACL sandbox) is verified on real machines; Linux (bwrap) is implemented but **not yet
-real-machine verified**.
+(ACL sandbox) and macOS (Seatbelt) are verified on real machines; Linux (bwrap) is
+implemented but **not yet real-machine verified**.
 
 > Current version `v0.2.1-beta.2`, compatibility baseline dsh `0.2.0-rc.2`.
 
@@ -85,8 +85,10 @@ decision trail, scenario examples, troubleshooting) live in the
 What the sandbox may write is an allow-list; this plugin **appends the authorized
 directories** to it: on Windows it materializes inherited write ACEs for the workspace
 write SID (revocation reclaims automatically, with a persisted reconcile manifest); on
-Linux it extends `bwrap` with `--bind`. For the mechanics, security design and the
-reconcile loop see [architecture and security boundaries](docs/guides/architecture.en.md).
+Linux it extends `bwrap` with `--bind`; on macOS it appends
+`(allow file-write* (subpath "<directory>"))` to the `sandbox-exec` Seatbelt profile.
+For the mechanics, security design and the reconcile loop see
+[architecture and security boundaries](docs/guides/architecture.en.md).
 
 ## Security boundaries (must read)
 
@@ -108,7 +110,13 @@ reconcile loop see [architecture and security boundaries](docs/guides/architectu
   leftover ACEs can be cleaned up with `node scripts/revoke.mjs` (normally
   unnecessary).
 - Linux: the `bwrap` path is implemented but **not yet real-machine verified**;
-  `landlock`/`seatbelt` are not supported.
+  `landlock` is not supported.
+- macOS: the append relies on the core shape "the profile rides `-p`"; if core changes
+  how it assembles the profile, the stock profile is kept and a one-time warning is
+  logged. `sandbox-exec` is deprecated by Apple (still functional today) and may stop
+  working in a future system version.
+- Authorized directories must already exist (Seatbelt matches resolved paths, so
+  symlinks are followed).
 - The write/edit tools only admit authorized directories in `workspace-write` mode.
 - If installing/uninstalling/toggling the plugin while running misbehaves, see
   [known issues](docs/issues/ki-1-session-controller-reload-race.md).

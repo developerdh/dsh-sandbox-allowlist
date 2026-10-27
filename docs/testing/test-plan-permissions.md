@@ -361,6 +361,11 @@ sandbox-allowlist:
 | C7 | 执行 `echo test > <测试目录>/outside/a.txt`（未授权目录） | 沙箱拒绝 → AI 自动带 sandbox_permissions 重试 → 弹**升级审批**，弹窗含 `[sandbox-allowlist]` 解释（越界写，轨道②）与建议规则；**选择拒绝** |
 | C8 | 把 `allowedDirs` 临时配置为 `[ '<测试目录>\allowed' ]`，然后执行 `echo test > <测试目录>/allowed/a.txt` | 直接成功，**无任何审批**——目录授权后沙箱直接放行，根本不产生升级请求（"按路径授权优于命令规则"） |
 
+> 平台差异：Windows 的 C8 还会在目录上物化工作区 SID 的继承式写 ACE（`icacls` 可见），
+> 删除配置后自动回收；macOS（Seatbelt）改为把该目录追加进 `sandbox-exec` 的 profile，
+> 删除配置后下一次命令即恢复拦截，没有 ACE 可观察；Linux（bwrap）追加 `--bind`。
+> macOS 上夹具路径先 `realpath` 再断言（`/tmp` 是软链），未授权目录仍应被拦。
+
 ### 4.4 禁读规则（工具层）
 
 在配置了 §4.1 noRead 规则的前提下，让 AI 用**自带文件工具**操作 `<测试目录>\secret`：

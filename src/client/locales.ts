@@ -121,9 +121,9 @@ export const zh = {
   'common.resetOverrideTitle': '清除用户层覆盖，回到部署默认',
   'common.resetNotOverrideTitle': '当前未覆盖部署默认',
   'common.reset': '重置为默认',
-  'provider.badge': '仅 Linux 生效',
-  'provider.summary': '仅 Linux（bwrap）实际生效；Windows 空转，macOS 忽略授权目录。',
-  'provider.notice': '此行是 Linux 专用扩展：只有在 Linux（bwrap 运行器）上才会把「授权目录」加入沙箱写白名单。Windows 上官方 ACL 沙箱保持原样，本行即使启用也自动空转、不产生任何效果；macOS（seatbelt）与其余运行器无法扩展，授权目录会被忽略并记录一次警告。',
+  'provider.badge': 'Linux / macOS 生效',
+  'provider.summary': 'Linux（bwrap）与 macOS（seatbelt）实际生效；Windows 空转，landlock 运行器不支持。',
+  'provider.notice': '此行在 Linux/macOS 生效：Linux 给 bwrap 追加 --bind，macOS 给 sandbox-exec 的 Seatbelt profile 追加放行规则，授权目录由此加入沙箱写白名单。Windows 上官方 ACL 沙箱保持原样，本行即使启用也自动空转、不产生任何效果；Linux 的 landlock 运行器无法扩展，授权目录会被忽略并记录一次警告。',
 
   // ── 会话区授权状态面板（utilities 槽位弹层）────────────────────────────────
   'status.panelTitle': '授权状态',
@@ -278,9 +278,9 @@ export const en = {
   'common.resetOverrideTitle': 'Clear the user-layer override and return to the deployment default',
   'common.resetNotOverrideTitle': 'The deployment default is not overridden',
   'common.reset': 'Reset to default',
-  'provider.badge': 'Linux only',
-  'provider.summary': 'Only takes effect on Linux (bwrap); on Windows this row is inert, and macOS ignores authorized directories.',
-  'provider.notice': 'This row is a Linux-only extension: only on Linux (the bwrap runner) are authorized directories added to the sandbox write allow-list. On Windows the official ACL sandbox stays as-is and this row is inert even when enabled; macOS (seatbelt) and other runners cannot be extended — authorized directories are ignored with a one-time warning.',
+  'provider.badge': 'Linux / macOS',
+  'provider.summary': 'Takes effect on Linux (bwrap) and macOS (seatbelt); inert on Windows, and the Linux landlock rung cannot be extended.',
+  'provider.notice': 'This row takes effect on Linux and macOS: on Linux it appends --bind to bwrap, on macOS it appends allow rules to the sandbox-exec Seatbelt profile, adding the authorized directories to the sandbox write allow-list. On Windows the official ACL sandbox stays as-is and this row is inert even when enabled; the Linux landlock rung cannot be extended, so authorized directories are ignored there with a one-time warning.',
 
   // ── Session authorization panel (utilities-slot popup) ─────────────────────
   'status.panelTitle': 'Authorization state',
