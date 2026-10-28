@@ -34,6 +34,7 @@
     "test:matrix": "node test/verify-command-matrix.mjs",
     "test:read-gate": "node test/verify-read-restriction.mjs",
     "test:client": "node test/verify-client-editor.mjs",
+    "test:seatbelt": "node test/verify-seatbelt.mjs",
     "typecheck": "tsc --noEmit",
     "build:client": "tsc -p tsconfig.build.json && tsdown",
     "prepublishOnly": "npm test && npm run test:command-gate && npm run test:approval-gate && npm run test:matrix && npm run test:read-gate && npm run test:client && npm run test:dry-mount"

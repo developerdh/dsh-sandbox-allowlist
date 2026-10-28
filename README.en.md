@@ -111,10 +111,10 @@ For the mechanics, security design and the reconcile loop see
   unnecessary).
 - Linux: the `bwrap` path is implemented but **not yet real-machine verified**;
   `landlock` is not supported.
-- macOS: the append relies on the core shape "the profile rides `-p`"; if core changes
-  how it assembles the profile, the stock profile is kept and a one-time warning is
-  logged. `sandbox-exec` is deprecated by Apple (still functional today) and may stop
-  working in a future system version.
+- macOS: the append relies on core exposing the profile through `runnerArgv()` as
+  `-p <profile>`; if core changes how it assembles the profile, the stock profile is
+  kept and a `confine()` sentinel logs a one-time warning. `sandbox-exec` is deprecated
+  by Apple (still functional today) and may stop working in a future system version.
 - Authorized directories must already exist (Seatbelt matches resolved paths, so
   symlinks are followed).
 - The write/edit tools only admit authorized directories in `workspace-write` mode.

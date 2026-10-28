@@ -25,12 +25,14 @@ directories** to that list:
 - **Linux**: `bwrap` is extended with `--bind <root> <root>`.
 - **macOS**: core wraps a confined command as
   `sandbox-exec -p <SBPL profile> -- <original command>`. The provider appends
-  `(allow file-write* (subpath "<directory>"))` to the end of the profile; SBPL lets the
-  last matching rule win, so the stock `deny file-write*` stays in force outside the
-  workspace and the authorized directories. The profile is a plain argv string, so no
-  core-private builder is needed; authorized directories are canonicalized through
-  realpath in `policy.mjs` (Seatbelt matches resolved paths — `/tmp` and `/private/tmp`
-  are the same place).
+  `(allow file-write* (subpath "<directory>"))` to the end of the profile inside core's
+  `runnerArgv()` hook, and a `confine()` sentinel checks the append actually landed in
+  the final argv. SBPL lets the last matching rule win, so the stock
+  `deny file-write*` stays in force outside the workspace and the authorized
+  directories. The runner is identified by the backend name core passes, not by the
+  binary name, and an operator-declared `runnerCommand` profile is never rewritten;
+  authorized directories are canonicalized through realpath in `policy.mjs` (Seatbelt
+  matches resolved paths — `/tmp` and `/private/tmp` are the same place).
 
 ## Security boundaries (must read)
 

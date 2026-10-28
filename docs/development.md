@@ -15,6 +15,7 @@ npm run test:matrix          # 对抗回归矩阵（沙箱相位 × 升级相位
 npm run test:read-gate       # 端到端验证 noRead 禁读（policy 挂载 + fs 强制层 + pre-execute deny/ask）
 npm run test:client          # 设置页客户端 bundle 渲染断言（含防漂移标记与 i18n 词典断言）
 npm run test:dry-mount       # 干挂载（临时 cordis 上下文端到端验证）
+npm run test:seatbelt        # macOS 真机集成：真实 sandbox-exec 校验授权目录可写 / 越界写被拦 / read-only 拒绝（非 macOS 自动跳过）
 npm run test:patch           # 补丁组合预检（需先设 DSH_INSTALL_ANCHOR，见下）
 ```
 
@@ -29,6 +30,11 @@ npm run test:patch           # 补丁组合预检（需先设 DSH_INSTALL_ANCHOR
 | `DSH_TEST_OUTSIDE` | dry-mount 的工作区外越界探针目录 | 系统临时目录的父目录（按 pid 隔离） |
 | `DSH_INSTALL_ANCHOR` | test:patch 组合真实 web profile 所需的 dsh 安装锚点 | **无（必填）** |
 | `DHS_INSTALL_ANCHOR` | resolve-hook 解析 @deepseek-ai/* 的安装锚点 | 仓库自身 node_modules |
+
+平台差异与 CI：与平台绑定的断言（盘符、分隔符/大小写折叠、`D:\` 锚点）只在 win32
+分支生效，POSIX 断言自身语义；`pwsh` 工具由宿主 preset 以
+`process.platform !== 'win32'` 禁用，非 Windows 不跑 pwsh 相关用例。CI 为双平台矩阵：
+Windows 覆盖 ACL 与 win32 语义，macOS 覆盖 POSIX 语义与真机 Seatbelt。
 
 真机验证要点（**Windows / macOS**；Linux 的 bwrap 路径尚未真机验证）：受限 pwsh /
 write 工具写授权目录应成功且无审批；写工作区外**非**可信目录应仍被拦截
@@ -115,6 +121,7 @@ lib/read-deny.mjs   禁读规则引擎（文件名/路径匹配 + deny/ask，纯
 lib/read-gate.mjs   tools/pre-execute 拦截门：read/read_image/edit 的 deny/ask 决策
 lib/fs.mjs          替换 fs-sandbox：write/edit 栅栏放行 extraRoots + noRead 读强制层
 lib/provider.mjs    替换 sandbox：Linux bwrap --bind 追加 / macOS seatbelt profile 追加
+                    （runnerArgv 钩子 + confine 哨兵）
 lib/meta/           行显示元数据（fs/provider 的中英描述，exports 映射为
                     <行地址>/locale/*.json 供插件管理器读取）
 lib/patterns.mjs    通配符匹配与目录展开（共享）

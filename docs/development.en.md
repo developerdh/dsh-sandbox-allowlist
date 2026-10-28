@@ -16,6 +16,7 @@ npm run test:matrix          # adversarial regression matrix (sandbox phase × e
 npm run test:read-gate       # end-to-end noRead restriction (policy mount + fs enforcement layer + pre-execute deny/ask)
 npm run test:client          # settings-page client bundle render assertions (anti-drift markers + i18n dictionary assertions)
 npm run test:dry-mount       # dry mount (end-to-end validation on a temporary cordis context)
+npm run test:seatbelt        # macOS integration: real sandbox-exec validates trusted-root write / out-of-bounds deny / read-only deny (auto-skips elsewhere)
 npm run test:patch           # patch composition pre-check (requires DSH_INSTALL_ANCHOR first, see below)
 ```
 
@@ -31,6 +32,12 @@ environment is needed —
 | `DSH_TEST_OUTSIDE` | dry-mount's out-of-workspace probe path | parent of the temp directory (isolated per pid) |
 | `DSH_INSTALL_ANCHOR` | dsh install anchor needed by test:patch to compose a real web profile | **none (required)** |
 | `DHS_INSTALL_ANCHOR` | install anchor the resolve-hook uses to resolve @deepseek-ai/* | the repository's own node_modules |
+
+Platform-specific assertions (drive letters, separator/case folding, `D:\` anchors) only
+run on win32; POSIX asserts its own literal semantics. The `pwsh` tool is disabled by the
+host preset with `process.platform !== 'win32'`, so non-Windows never exercises pwsh
+cases. CI is a two-platform matrix: Windows covers ACL and win32 semantics, macOS covers
+POSIX semantics plus a real-machine Seatbelt check.
 
 Real-machine verification points (**Windows / macOS**; the Linux bwrap path is not yet
 real-machine verified): a confined pwsh / the write tool should succeed writing
@@ -134,6 +141,7 @@ lib/read-deny.mjs   read-restriction rule engine (file-name/path matching + deny
 lib/read-gate.mjs   tools/pre-execute interception gate: deny/ask decisions for read/read_image/edit
 lib/fs.mjs          replaces fs-sandbox: write/edit fence admitting extraRoots + noRead read enforcement layer
 lib/provider.mjs    replaces sandbox: Linux bwrap --bind / macOS seatbelt profile extension
+                    (runnerArgv hook + confine sentinel)
 lib/meta/           row display metadata (zh/en descriptions for fs/provider, exports-mapped
                     to <row-address>/locale/*.json for the plugin manager)
 lib/patterns.mjs    wildcard matching and directory expansion (shared)

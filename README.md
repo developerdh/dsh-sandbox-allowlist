@@ -96,9 +96,9 @@ dsh plugin --profile web add /tmp/pkg/dsh-sandbox-allowlist-*.tgz
 - Windows：授权目录必须已存在且归当前用户所有；残留 ACE 可用
   `node scripts/revoke.mjs` 应急清理（通常无需使用）。
 - Linux：`bwrap` 路径已实现但**尚未真机验证**；`landlock` 不支持。
-- macOS：追加依赖 core「profile 经 `-p` 传入」的形态；core 改变拼装方式时退回
-  原生 profile 并告警一次。`sandbox-exec` 已被 Apple 标记弃用（当前仍可用），
-  未来系统版本可能失效。
+- macOS：追加依赖 core 经 `runnerArgv()` 暴露 `-p <profile>` 的形态；core 改变
+  拼装方式时退回原生 profile，由 `confine()` 哨兵告警一次。`sandbox-exec` 已被
+  Apple 标记弃用（当前仍可用），未来系统版本可能失效。
 - 授权目录必须真实存在（Seatbelt 按 realpath 匹配，软链会被解析到真实路径）。
 - write/edit 工具只在 `workspace-write` 模式放行授权目录。
 - 运行中启停插件若遇异常，处置见
