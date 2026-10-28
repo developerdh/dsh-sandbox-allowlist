@@ -76,8 +76,12 @@ assert.equal(classify('ls -la').kind, 'read', 'ls reads')
 assert.equal(classify('sed -i s/a/b/ f.txt').kind, 'opaque', 'sed is opaque either way (its scripts can execute and write)')
 assert.equal(classify('find . -name "*.ts"').kind, 'read', 'find without -exec reads')
 assert.equal(classify('find . -exec rm {} \\;').kind, 'local-write', 'find -exec is not a read')
-assert.equal(classify('Get-ChildItem -Recurse').kind, 'read', 'Get- verb is read by convention')
-assert.equal(classify('Where-Object { $_.x }').kind, 'read', 'Where-Object reads')
+if (process.platform === 'win32') {
+  // PowerShell 动词分类跟随程序名归一化，而归一化只在 Windows 折叠大小写；
+  // pwsh 工具本身也只在 Windows 注册（宿主 preset 的禁用条件），非 Windows 不覆盖。
+  assert.equal(classify('Get-ChildItem -Recurse').kind, 'read', 'Get- verb is read by convention')
+  assert.equal(classify('Where-Object { $_.x }').kind, 'read', 'Where-Object reads')
+}
 assert.equal(classify('Some-UnknownTool --flag').kind, 'unknown', 'anything unlisted is unknown')
 assert.equal(classify('pnpm test').kind, 'repo-exec', 'package-script runners are repo-exec')
 assert.equal(classify('pnpm install').kind, 'external', 'pnpm install reaches the network')
@@ -122,7 +126,9 @@ const source = (rules, extra = {}) => ({ rules, default: 'delegate', ...extra })
 assert.equal(shouldAutoAllow(source([]), 'bash', 'git status --porcelain && git diff --stat', ctx), true, 'read-only chain auto-escalates with no rules')
 assert.equal(shouldAutoAllow(source([]), 'bash', 'echo $(whoami)', ctx), true, 'a read-only substitution auto-escalates (the old shape guard refused it)')
 assert.equal(shouldAutoAllow(source([]), 'bash', 'cat <<EOF > ./notes.md\nhello\nEOF\n', ctx), true, 'an in-workspace redirect auto-escalates')
-assert.equal(shouldAutoAllow(source([]), 'pwsh', 'Get-ChildItem src -Recurse | Where-Object { $_.Length -gt 1000 } | Select-Object -First 5', ctx), true, 'a pwsh read pipeline auto-escalates (no cmdlet enumeration needed)')
+if (process.platform === 'win32') {
+  assert.equal(shouldAutoAllow(source([]), 'pwsh', 'Get-ChildItem src -Recurse | Where-Object { $_.Length -gt 1000 } | Select-Object -First 5', ctx), true, 'a pwsh read pipeline auto-escalates (no cmdlet enumeration needed)')
+}
 
 // The rules below appear in TWO groups. Under the single-layer `allow`, a rule
 // hit carries the escalation grant — so statements covered by `pnpm *` / `git *`
@@ -299,9 +305,12 @@ const escalation = (callId, tool = 'pwsh', justification = 'eslint spawns worker
 await dispatchPre('pwsh', 'call-1', 'pnpm lint 2>&1 | Select-Object -Last 20')
 assert.equal(await dispatchApproval(escalation('call-1')), 'allowed-once', 'the allow rule grants the escalation for its shape')
 
-// the capability baseline auto-approves a read-only pipeline with no rules at all
-await dispatchPre('pwsh', 'call-read', 'Get-ChildItem src -Recurse | Select-Object -First 5')
-assert.equal(await dispatchApproval(escalation('call-read')), 'allowed-once', 'read-only pipeline auto-escalates by capability class')
+// the capability baseline auto-approves a read-only pipeline with no rules at
+// all（PowerShell 动词分类依赖 Windows 大小写折叠，非 Windows 不覆盖）
+if (process.platform === 'win32') {
+  await dispatchPre('pwsh', 'call-read', 'Get-ChildItem src -Recurse | Select-Object -First 5')
+  assert.equal(await dispatchApproval(escalation('call-read')), 'allowed-once', 'read-only pipeline auto-escalates by capability class')
+}
 
 // a rider statement outside every benign class keeps the stock prompt
 const rider = escalation('call-2')

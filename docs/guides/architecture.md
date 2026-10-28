@@ -19,9 +19,11 @@ DSH 沙箱允许写哪里 = 允许清单（allow-list）。本插件向清单**�
   也会自动补齐回收。
 - **Linux**：`bwrap` 追加 `--bind <root> <root>`。
 - **macOS**：core 把受限命令包成 `sandbox-exec -p <SBPL profile> -- <原命令>`。
-  provider 在 profile 末尾追加 `(allow file-write* (subpath "<目录>"))`；SBPL 后写
-  覆盖先写，原生 `deny file-write*` 在工作区与授权目录之外继续生效。profile 是普通
-  argv 字符串，不依赖 core 的私有拼装函数；授权目录在 `policy.mjs` 中已按 realpath
+  provider 在 core 的 `runnerArgv()` 钩子里向 profile 末尾追加
+  `(allow file-write* (subpath "<目录>"))`，由 `confine()` 哨兵核对追加确已落到
+  最终 argv。SBPL 后写覆盖先写，原生 `deny file-write*` 在工作区与授权目录之外
+  继续生效。runner 由 core 按后端名传入、不靠二进制名推断，运维自声明的
+  `runnerCommand` profile 也不会被改写；授权目录在 `policy.mjs` 中已按 realpath
   规范化（Seatbelt 按解析后的真实路径匹配，`/tmp` 与 `/private/tmp` 是同一处）。
 
 ## 安全边界（务必阅读）

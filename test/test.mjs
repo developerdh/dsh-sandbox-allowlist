@@ -173,7 +173,11 @@ assert.equal(decideCommand({ rules, default: 'delegate' }, 'bash', 'npm test'), 
 assert.deepEqual(decideCommand({ rules }, 'bash', 'git status'), { kind: 'allow' })
 assert.deepEqual(decideCommand({ rules }, 'bash', 'git push origin main'), { kind: 'deny' })
 assert.deepEqual(decideCommand({ rules, default: 'ask' }, 'bash', 'npm test'), { kind: 'ask' })
-assert.deepEqual(decideCommand({ rules }, 'bash', 'GIT STATUS'), { kind: 'allow' }) // win32 case-insensitive
+// 规则匹配的大小写折叠只在 Windows 开启（POSIX 大小写敏感）。
+assert.deepEqual(
+  decideCommand({ rules }, 'bash', 'GIT STATUS'),
+  process.platform === 'win32' ? { kind: 'allow' } : 'delegate',
+)
 assert.equal(dispositionForAction('allow').kind, 'allow')
 assert.equal(dispositionForAction('deny').kind, 'deny')
 assert.equal(dispositionForAction('ask').kind, 'ask')
@@ -273,11 +277,12 @@ assert.match(denyReason('bash', 'rm -rf /'), /deny rule/)
       const loaded = loadManifest(file)
       assert.equal(MANIFEST_FILE_NAME, 'sandbox-allowlist-grants.json')
       assert.equal(loaded.workspaces['W:\\work'].sid, 'S-1-4-1-2')
-      assert.equal(
-        rootEntryAt(loaded.workspaces['W:\\work'], 'd:\\shared\\tools').grantedAt,
-        '2026-10-04T00:00:00.000Z',
-        'root lookup is separator/case-insensitive',
-      )
+      const looseLookup = rootEntryAt(loaded.workspaces['W:\\work'], 'd:\\shared\\tools')
+      if (process.platform === 'win32') {
+        assert.equal(looseLookup.grantedAt, '2026-10-04T00:00:00.000Z', 'root lookup is separator/case-insensitive')
+      } else {
+        assert.equal(looseLookup, undefined, 'POSIX keeps the path spelling literal, so the mismatched spelling misses')
+      }
       assert.equal(loaded.workspaces['W:\\work'].pendingRevoke[0].origin, 'excluded')
       assert.equal(loaded.workspaces['W:\\work'].history[0].path, 'D:\\Old')
 
@@ -323,7 +328,7 @@ assert.match(denyReason('bash', 'rm -rf /'), /deny rule/)
     const revoked = emptyWorkspaceRecord()
     pushHistory(revoked, { path: 'D:\\gone', origin: 'excluded' })
     assert.deepEqual(diffGrantedV2(revoked, ['D:\\gone']).toAdd, [])
-    assert.equal(isExcludedPath(revoked, 'D:\\GONE'), true)
+    assert.equal(isExcludedPath(revoked, 'D:\\GONE'), process.platform === 'win32', 'exclusion lookup folds case on Windows only')
 
     // duplicate wanted roots collapse; identical sets → no work
     assert.deepEqual(diffGrantedV2(emptyWorkspaceRecord(), ['a', 'a']).toAdd, ['a'])
@@ -347,8 +352,13 @@ assert.match(denyReason('bash', 'rm -rf /'), /deny rule/)
     enterPendingRevoke(book, { path: 'D:\\a', origin: 'excluded', error: 'e2' })
     assert.equal(book.pendingRevoke.length, 1, 'one pendingRevoke entry per path')
     assert.equal(book.pendingRevoke[0].origin, 'excluded')
-    assert.equal(dropPendingRevoke(book, 'd:\\A'), true)
-    assert.equal(book.pendingRevoke.length, 0)
+    if (process.platform === 'win32') {
+      assert.equal(dropPendingRevoke(book, 'd:\\A'), true)
+      assert.equal(book.pendingRevoke.length, 0)
+    } else {
+      assert.equal(dropPendingRevoke(book, 'd:\\A'), false, 'POSIX keeps the path spelling literal')
+      assert.equal(book.pendingRevoke.length, 1)
+    }
   }
 
   // ── normalizeRecord 容错矩阵（L1-04：经 loadManifest 公共入口驱动，私有函数不导出） ──
@@ -594,7 +604,8 @@ try {
 
   // malformed / unsafe patterns → throw with an actionable message
   assert.throws(() => expandTrustedRoots('relative/path'), /must be absolute/)
-  assert.throws(() => expandTrustedRoots('D:\\**\\cache'), /anchored too broadly/)
+  const broadPattern = process.platform === 'win32' ? 'D:\\**\\cache' : '/srv/**'
+  assert.throws(() => expandTrustedRoots(broadPattern), /anchored too broadly/)
 
   // ── noRead read-restriction rules ───────────────────────────────────────
   assert.deepEqual(NO_READ_ACTIONS, ['deny', 'ask'], 'no allow action by design')
@@ -635,7 +646,12 @@ try {
 
   // 回归（M2）：目录级规则对分隔符变体不漏判——模型可用 D:/dir 代替 D:\dir
   const vaultRules = compileNoReadRules([{ pattern: 'D:\\Vault', action: 'deny' }])
-  assert.equal(resolveNoRead(vaultRules, 'D:/Vault/secret.txt')?.action, 'deny', 'forward-slash target still matches a backslash dir rule')
+  // 分隔符方向只在 Windows 归一；POSIX 逐字匹配。
+  assert.equal(
+    resolveNoRead(vaultRules, 'D:/Vault/secret.txt')?.action ?? null,
+    process.platform === 'win32' ? 'deny' : null,
+    'separator direction is unified on Windows only',
+  )
   assert.equal(resolveNoRead(vaultRules, 'D:\\Vault\\secret.txt')?.action, 'deny', 'the canonical spelling still matches')
   assert.equal(resolveNoRead(vaultRules, 'D:/Vault2/secret.txt'), null, 'segment boundary respected across separators')
   // 尾部斜杠：规则侧与目标侧的尾分隔符都归一，行为有断言兜底
@@ -745,21 +761,19 @@ try {
     }
   }
 
-  // ── provider: macOS Seatbelt profile append ───────────────────────────────
-  // 契约：core 把命令包成 `sandbox-exec -p <SBPL profile> -- ...用户 argv`，
-  // profile 是普通字符串，SBPL 后写覆盖先写。追加必须落在 profile 末尾、`--`
-  // 之前，且只认 `--` 之前的 `-p`（用户命令自带 `-p` 时不得改坏原命令）。
+  // ── provider: macOS Seatbelt profile append（runnerArgv 挂接点） ──────────
+  // 契约：core 的 runnerArgv('seatbelt', policy) 返回 [exec, '-p', <profile>]，
+  // 之后 confine 再补 `-- ...用户 argv`。扩展在 runnerArgv() override 里追加
+  // （runner 名由 core 传入，不靠二进制基名），confine() 只做哨兵校验：core
+  // 若不再经该钩子暴露 profile（或换掉 -p 形态），授权目录会静默丢失，必须
+  // 告警一次。授权目录在 policy.mjs 中已按 realpath 规范化，SBPL 后写覆盖先写。
   {
-    const profile = '(version 1) (allow default) (deny file-write*) (allow file-write* (literal "/dev/null"))'
     const userArgv = ['bash', '-c', 'echo hi']
-    const seatbeltArgv = ['sandbox-exec', '-p', profile, '--', ...userArgv]
-
-    // 正常追加：权限规则拼在 profile 末尾，argv 其余位置不变
     const roots = [join(base, 'notes'), join(base, 'with space')]
-    const extended = appendSeatbeltRoots(seatbeltArgv, roots)
-    assert.notEqual(extended, seatbeltArgv, 'append returns a new argv')
-    assert.equal(extended[0], 'sandbox-exec', 'runner stays sandbox-exec')
-    const extendedProfile = extended[extended.indexOf('-p') + 1]
+    const profile = '(version 1) (allow default) (deny file-write*) (allow file-write* (literal "/dev/null"))'
+
+    // 纯函数：追加落在 profile 末尾，stock 规则原样保留
+    const extendedProfile = appendSeatbeltRoots(profile, roots)
     assert.ok(extendedProfile.startsWith(profile), 'stock profile is kept as the prefix')
     for (const root of roots) {
       assert.ok(
@@ -767,63 +781,120 @@ try {
         `trusted root lands in the SBPL profile: ${root}`,
       )
     }
-    assert.deepEqual(extended.slice(extended.indexOf('--')), ['--', ...userArgv], 'user argv stays after -- untouched')
 
     // 路径含引号/反斜杠：按 core 的 SBPL 转义规则（先反斜杠、再引号）
-    const tricky = appendSeatbeltRoots(seatbeltArgv, ['/tmp/a"b', '/tmp/c\\d'])
-    const trickyProfile = tricky[tricky.indexOf('-p') + 1]
+    const trickyProfile = appendSeatbeltRoots(profile, ['/tmp/a"b', '/tmp/c\\d'])
     assert.ok(trickyProfile.includes('(subpath "/tmp/a\\"b")'), 'double quotes are escaped')
     assert.ok(trickyProfile.includes('(subpath "/tmp/c\\\\d")'), 'backslashes are escaped')
 
-    // 形状不认识：原样返回（新 argv 都不造），绝不改坏沙箱
-    for (const [label, argv] of [
-      ['no -- separator', ['sandbox-exec', '-p', profile, ...userArgv]],
-      ['no -p', ['sandbox-exec', '--', ...userArgv]],
-      ['-p only in the user argv', ['sandbox-exec', '--', 'ls', '-p']],
-      ['-p with no profile token', ['sandbox-exec', '-p', '--', ...userArgv]],
-      ['empty roots', seatbeltArgv],
-    ]) {
-      const untouched = appendSeatbeltRoots(argv, label === 'empty roots' ? [] : roots)
-      assert.equal(untouched, argv, `unrecognized shape returns the argv untouched: ${label}`)
-    }
+    // 无授权目录 / 非 profile 输入：原样返回（新字符串都不造）
+    assert.equal(appendSeatbeltRoots(profile, []), profile, 'no trusted roots returns the profile untouched')
+    assert.equal(appendSeatbeltRoots('', roots), '', 'non-profile input passes through')
 
-    // provider.confine 分支：只在 workspace-write + 有授权目录时追加
+    // runnerArgv override 对真实 core profile builder 断言：darwin 链只有
+    // seatbelt 一跳，免探测、不派生进程，Windows CI 同样可跑。
     const platform0 = process.platform
-    const originalConfine = LocalSandboxProvider.prototype.confine
+    const warnings = []
     const provider = Object.create(AllowlistSandboxProvider.prototype)
+    provider.internals = { platform: 'darwin' }
+    provider.ctx = { logger: { warn: (message) => warnings.push(message) } }
     provider._unsupportedWarned = false
     provider._seatbeltShapeWarned = false
-    const warnings = []
-    provider.ctx = { logger: { warn: (message) => warnings.push(message) } }
-    LocalSandboxProvider.prototype.confine = async () => ({ argv: seatbeltArgv.slice(), enforcement: 'full' })
+    provider._runnerCommandWarned = false
     try {
       Object.defineProperty(process, 'platform', { value: 'darwin' })
-      const trustedRoot = join(base, 'mac-notes')
-      const confined = await provider.confine(userArgv, {
+
+      const stock = provider.runnerArgv('seatbelt', { mode: 'workspace-write', workspaceRoot: base })
+      assert.deepEqual(stock.slice(0, 2), ['sandbox-exec', '-p'], 'core shape is [exec, -p, profile]')
+      assert.ok(stock[2].includes('(deny file-write*)') && stock[2].includes('(literal "/dev/null")'), 'stock rules are present')
+      assert.deepEqual(
+        provider.runnerArgv('seatbelt', { mode: 'workspace-write', workspaceRoot: base, extraRoots: [] }),
+        stock,
+        'empty roots leave the runner argv untouched',
+      )
+
+      const withRoots = provider.runnerArgv('seatbelt', { mode: 'workspace-write', workspaceRoot: base, extraRoots: roots })
+      assert.equal(withRoots[0], 'sandbox-exec', 'runner stays sandbox-exec')
+      assert.equal(withRoots[1], '-p', 'profile flag stays in place')
+      assert.equal(withRoots[2], appendSeatbeltRoots(stock[2], roots), 'append sits on the real core-built profile')
+      assert.deepEqual(withRoots.slice(3), stock.slice(3), 'runner argv positions other than the profile are untouched')
+
+      // read-only 门：不追加
+      assert.deepEqual(
+        provider.runnerArgv('seatbelt', { mode: 'read-only', workspaceRoot: base, extraRoots: roots }),
+        provider.runnerArgv('seatbelt', { mode: 'read-only', workspaceRoot: base }),
+        'read-only mode leaves the profile untouched',
+      )
+
+      // bwrap 不走该钩子的追加逻辑
+      assert.equal(
+        provider.runnerArgv('bwrap', { mode: 'workspace-write', workspaceRoot: base, extraRoots: roots })[0],
+        'bwrap',
+        'bwrap argv is not touched by the seatbelt hook',
+      )
+
+      // 端到端：真实 core confine 选中 seatbelt → runnerArgv 追加 → 哨兵通过
+      const confined = await provider.confine(userArgv, { mode: 'workspace-write', workspaceRoot: base, extraRoots: roots })
+      const separator = confined.argv.indexOf('--')
+      assert.ok(separator > 0, 'confined argv keeps the -- separator')
+      assert.deepEqual(confined.argv.slice(separator + 1), userArgv, 'user argv rides after -- untouched')
+      assert.equal(confined.argv[confined.argv.indexOf('-p') + 1], appendSeatbeltRoots(stock[2], roots), 'the extended profile survives into confine')
+      assert.equal(warnings.length, 0, 'supported runner logs no warning')
+
+      // core 不再调用该钩子（等价于将来把 runnerArgv 内联）：哨兵必须告警一次，
+      // 且保持 stock profile——宁可授权目录不生效，也不能静默。
+      const originalRunnerArgv = LocalSandboxProvider.prototype.runnerArgv
+      provider.runnerArgv = originalRunnerArgv
+      provider._seatbeltShapeWarned = false
+      warnings.length = 0
+      const inlined = await provider.confine(userArgv, { mode: 'workspace-write', workspaceRoot: base, extraRoots: roots })
+      assert.equal(inlined.argv[inlined.argv.indexOf('-p') + 1], stock[2], 'stock profile stays when the hook is bypassed')
+      assert.equal(warnings.length, 1, 'sentinel warns exactly once')
+      assert.ok(warnings[0].includes('did not land'), 'sentinel names the missing extension')
+      delete provider.runnerArgv
+
+      // core 换掉 -p 形态：runnerArgv 原样返回并告警一次，绝不改坏沙箱
+      provider._seatbeltShapeWarned = false
+      warnings.length = 0
+      LocalSandboxProvider.prototype.runnerArgv = () => ['sandbox-exec', '--']
+      try {
+        const shaped = provider.runnerArgv('seatbelt', { mode: 'workspace-write', workspaceRoot: base, extraRoots: roots })
+        assert.deepEqual(shaped, ['sandbox-exec', '--'], 'unrecognized runner shape is returned untouched')
+        assert.equal(warnings.length, 1, 'runner shape mismatch warns exactly once')
+      } finally {
+        LocalSandboxProvider.prototype.runnerArgv = originalRunnerArgv
+      }
+    } finally {
+      Object.defineProperty(process, 'platform', { value: platform0 })
+    }
+  }
+
+  // ── provider: runnerCommand 自声明的 profile 不被改写 ────────────────────
+  // core 在 runnerCommand 路径提前返回，永远不会调用 runnerArgv()。插件既不能
+  // 把授权目录塞进运维手写的 profile，也不能假装扩展已生效——告警一次即可。
+  {
+    const platform0 = process.platform
+    const warnings = []
+    const provider = Object.create(AllowlistSandboxProvider.prototype)
+    provider.internals = {}
+    provider.runnerCommand = ['sandbox-exec', '-p', '(deny default)']
+    provider.configuredRunnerFailureSignatures = ['bwrap: ']
+    provider.ctx = { logger: { warn: (message) => warnings.push(message) } }
+    provider._unsupportedWarned = false
+    provider._seatbeltShapeWarned = false
+    provider._runnerCommandWarned = false
+    try {
+      Object.defineProperty(process, 'platform', { value: 'darwin' })
+      const confined = await provider.confine(['bash', '-c', 'echo hi'], {
         mode: 'workspace-write',
         workspaceRoot: base,
-        extraRoots: [trustedRoot],
+        extraRoots: [join(base, 'mac-notes')],
       })
-      assert.ok(
-        confined.argv[confined.argv.indexOf('-p') + 1].includes(`(subpath "${trustedRoot}")`),
-        'seatbelt profile carries the trusted root under workspace-write',
-      )
-      assert.equal(warnings.length, 0, 'supported runner logs no unsupported warning')
-
-      const readOnly = await provider.confine(userArgv, { mode: 'read-only', workspaceRoot: base, extraRoots: [trustedRoot] })
-      assert.deepEqual(readOnly.argv, seatbeltArgv, 'read-only mode is left untouched')
-
-      const noRoots = await provider.confine(userArgv, { mode: 'workspace-write', workspaceRoot: base, extraRoots: [] })
-      assert.deepEqual(noRoots.argv, seatbeltArgv, 'no trusted roots leaves the argv untouched')
-
-      // core 换形态：保持 stock profile + 一次性告警，且只告警一次
-      LocalSandboxProvider.prototype.confine = async () => ({ argv: ['sandbox-exec', '--', ...userArgv], enforcement: 'full' })
-      const shaped = await provider.confine(userArgv, { mode: 'workspace-write', workspaceRoot: base, extraRoots: [trustedRoot] })
-      assert.deepEqual(shaped.argv, ['sandbox-exec', '--', ...userArgv], 'unrecognized seatbelt shape keeps the stock invocation')
-      assert.equal(warnings.length, 1, 'shape mismatch warns exactly once')
-      assert.ok(warnings[0].includes('unrecognized "sandbox-exec" invocation'), 'warning names the unrecognized shape')
+      assert.equal(confined.argv[0], 'sandbox-exec', 'runnerCommand runner is unchanged')
+      assert.equal(confined.argv[2], '(deny default)', 'operator-declared profile is left untouched')
+      assert.equal(warnings.length, 1, 'runnerCommand path warns exactly once')
+      assert.ok(warnings[0].includes('runnerCommand'), 'warning names runnerCommand')
     } finally {
-      LocalSandboxProvider.prototype.confine = originalConfine
       Object.defineProperty(process, 'platform', { value: platform0 })
     }
   }
@@ -969,7 +1040,10 @@ try {
     assert.equal(caseRules('bash', 'git branch -d feature-x'), 'allow', 'the spelled form matches')
     assert.equal(caseRules('bash', 'git branch -D feature-x'), null, 'flag case is semantic: -d must not match -D')
     const pwshCase = compileCommandRules([{ pattern: 'Get-Content *', action: 'ask' }])
-    assert.equal(pwshCase('pwsh', 'get-content ./f.txt'), 'ask', 'the program token folds on both sides')
+    // pwsh 工具由宿主 preset 以 `process.platform !== 'win32'` 禁用，非 Windows 不覆盖。
+    if (process.platform === 'win32') {
+      assert.equal(pwshCase('pwsh', 'get-content ./f.txt'), 'ask', 'the program token folds on both sides')
+    }
 
     assert.ok(validateCommandRule({ action: 'allow' }) !== null, 'a rule without a pattern is refused')
     assert.ok(validateCommandRule({ pattern: 'git *', action: 'grant' }) !== null, 'unknown actions are refused')
@@ -991,9 +1065,13 @@ try {
     assert.equal(kind('find . -exec rm {} ;'), 'local-write', 'find -exec is not a read')
     assert.equal(kind('python -c "x"'), 'opaque')
     assert.equal(kind('python --version'), 'read')
-    assert.equal(kind('Get-Content x'), 'read', 'approved Get verb')
-    assert.equal(kind('Set-Content x y'), 'local-write')
-    assert.equal(kind('Remove-Item -Recurse x'), 'destructive')
+    if (process.platform === 'win32') {
+      // PowerShell 动词分类依赖程序名归一化，而归一化只在 Windows 折叠大小写；
+      // pwsh 工具本身也只在 Windows 注册，非 Windows 不覆盖这些断言。
+      assert.equal(kind('Get-Content x'), 'read', 'approved Get verb')
+      assert.equal(kind('Set-Content x y'), 'local-write')
+      assert.equal(kind('Remove-Item -Recurse x'), 'destructive')
+    }
     assert.equal(kind('docker ps'), 'read', 'docker ps is a read-only form')
     assert.equal(kind('docker run x'), 'external')
     assert.equal(kind('acme-unknown --flag'), 'unknown')
