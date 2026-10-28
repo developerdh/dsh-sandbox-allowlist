@@ -115,7 +115,15 @@ console.log('-'.repeat(120))
 
 const contextual = (command) =>
   /^pnpm (docs|deploy|test)\b/.test(command) ? withScripts : context
+// pwsh 工具由宿主 preset 以 `process.platform !== 'win32'` 禁用：非 Windows 上工具不存在，
+// 这些行覆盖的是不可达路径，整行跳过（Windows CI 仍全量校验）。
+const WIN32 = process.platform === 'win32'
+let skipped = 0
 for (const [tool, command, expectedSandbox, expectedEscalation, note] of rows) {
+  if (!WIN32 && tool === 'pwsh') {
+    skipped += 1
+    continue
+  }
   const decisionContext = contextual(command)
   const sandbox = decide({ source, tool, command, phase: 'sandbox', context: decisionContext })
   const escalation = decide({ source, tool, command, phase: 'escalation', context: decisionContext })
@@ -135,5 +143,5 @@ for (const [tool, command, expectedSandbox, expectedEscalation, note] of rows) {
   )
 }
 console.log('-'.repeat(120))
-console.log(`verify-command-matrix: ${rows.length} rows checked (a mismatch would have thrown at its row)`)
+console.log(`verify-command-matrix: ${rows.length - skipped} rows checked${skipped > 0 ? ` (${skipped} pwsh rows skipped: tool is Windows-only)` : ''} (a mismatch would have thrown at its row)`)
 
