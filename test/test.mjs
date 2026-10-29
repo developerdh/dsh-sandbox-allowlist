@@ -544,6 +544,8 @@ assert.match(denyReason('bash', 'rm -rf /'), /deny rule/)
 // Windows 上 TEMP 可能是 8.3 短路径（如 CI runner 的 RUNNER~1），而
 // expandTrustedRoots 返回 realpath 规范化路径，夹具必须用同一形态做相等断言
 const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'dsh-allowlist-test-')))
+/** The user argv every confine() test wraps; the provider never inspects it. */
+const shellArgv = ['bash', '-c', 'echo hi']
 try {
   const shared = join(base, 'Shared')
   const sharedA = join(shared, 'a')
@@ -897,6 +899,74 @@ try {
       assert.equal(confined.argv[2], '(deny default)', 'operator-declared profile is left untouched')
       assert.equal(warnings.length, 1, 'runnerCommand path warns exactly once')
       assert.ok(warnings[0].includes('runnerCommand'), 'warning names runnerCommand')
+    } finally {
+      Object.defineProperty(process, 'platform', { value: platform0 })
+    }
+  }
+
+  // ── provider: 自定义 seatbelt 二进制名不误报「无法扩展」 ─────────────────
+  // internals.seatbeltExec 被 override 成非 sandbox-exec 名时，confine 侧若只按
+  // argv[0] 基名识别，会认不出后端并告警「cannot extend」——而 runnerArgv() 其实
+  // 已经把授权目录追加进 profile。兜底取 core 缓存的 selectedRunner.runner，
+  // 让「追加成功但被误报为不支持」不再发生。
+  {
+    const platform0 = process.platform
+    const warnings = []
+    const provider = Object.create(AllowlistSandboxProvider.prototype)
+    provider.internals = { platform: 'darwin', seatbeltExec: '/opt/custom/sbx' }
+    provider.ctx = { logger: { warn: (message) => warnings.push(message) } }
+    provider._unsupportedWarned = false
+    provider._seatbeltShapeWarned = false
+    provider._runnerCommandWarned = false
+    provider._filesystemRootWarned = false
+    const roots = [join(base, 'notes')]
+    try {
+      Object.defineProperty(process, 'platform', { value: 'darwin' })
+      const confined = await provider.confine(shellArgv, { mode: 'workspace-write', workspaceRoot: base, extraRoots: roots })
+      assert.equal(confined.argv[0], '/opt/custom/sbx', 'the overridden binary is used verbatim')
+      const escaped = roots[0].replaceAll('\\', '\\\\').replaceAll('"', '\\"')
+      assert.ok(
+        confined.argv[confined.argv.indexOf('-p') + 1].includes(`(subpath "${escaped}")`),
+        'the append still lands on the core-built profile',
+      )
+      assert.deepEqual(warnings, [], 'an overridden binary name is not reported as an unextendable backend')
+    } finally {
+      Object.defineProperty(process, 'platform', { value: platform0 })
+    }
+  }
+
+  // ── provider: 文件系统根不被当作授权目录（fail-closed） ───────────────────
+  // `allowedDirs: ['/']` 这类误配在 Seatbelt 上会生成 (subpath "/")，last-match
+  // 让 stock `(deny file-write*)` 全线失效；bwrap 侧同理是整树读写绑定。两端
+  // 共用同一个过滤点：丢弃文件系统根、告警一次、保持 stock profile。
+  {
+    const platform0 = process.platform
+    const warnings = []
+    const provider = Object.create(AllowlistSandboxProvider.prototype)
+    provider.internals = { platform: 'darwin' }
+    provider.ctx = { logger: { warn: (message) => warnings.push(message) } }
+    provider._unsupportedWarned = false
+    provider._seatbeltShapeWarned = false
+    provider._runnerCommandWarned = false
+    provider._filesystemRootWarned = false
+    try {
+      Object.defineProperty(process, 'platform', { value: 'darwin' })
+      const stock = provider.runnerArgv('seatbelt', { mode: 'workspace-write', workspaceRoot: base })
+      assert.deepEqual(
+        provider.runnerArgv('seatbelt', { mode: 'workspace-write', workspaceRoot: base, extraRoots: ['/'] }),
+        stock,
+        'a filesystem root is never appended to the SBPL profile',
+      )
+      assert.equal(warnings.length, 1, 'the misconfiguration warns exactly once')
+      assert.ok(warnings[0].includes('filesystem root'), 'the warning names the dropped root')
+      assert.deepEqual(provider._extraRoots({ extraRoots: ['/', base] }), [base], 'only the filesystem root is dropped')
+      const confined = await provider.confine(shellArgv, { mode: 'workspace-write', workspaceRoot: base, extraRoots: ['/'] })
+      assert.equal(warnings.length, 1, 'confine() reuses the one-shot warning')
+      assert.deepEqual(
+        confined.argv[confined.argv.indexOf('-p') + 1],
+        stock[2],
+        'the profile stays stock when every extra root is dropped',
+      )
     } finally {
       Object.defineProperty(process, 'platform', { value: platform0 })
     }
