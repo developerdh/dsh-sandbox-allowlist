@@ -14,10 +14,12 @@
  *     deprecated the tool and may remove it; a red CI for a removed system
  *     binary would be noise, not a plugin regression.
  *
- * The deny probe MUST live outside the stock writable roots (workspace, /tmp,
- * tmpdir): core puts those in every workspace-write profile by design, so a
- * deny assertion there would prove nothing. The temp directory under the home
- * directory below is intentionally outside them.
+ * Both the trusted root and the deny probe MUST live outside the stock
+ * writable roots (workspace, /tmp, tmpdir): core puts those in every
+ * workspace-write profile by design, so an allow assertion there would pass
+ * with this plugin removed entirely, and a deny assertion would prove nothing.
+ * Both directories are created under the home directory for that reason, and
+ * case 1b) re-runs case 1) with the stock runner — which must deny.
  *
  * Run from the package root: node test/verify-seatbelt.mjs
  */
@@ -43,11 +45,30 @@ if (probe.error !== undefined || probe.status !== 0) {
 
 const real = (path) => realpathSync.native(path)
 const root = real(mkdtempSync(join(tmpdir(), 'dsh-seatbelt-')))
-const outside = real(mkdtempSync(join(homedir(), '.dsh-seatbelt-outside-')))
 const workspace = join(root, 'ws')
-const trusted = join(root, 'trusted')
 mkdirSync(workspace)
-mkdirSync(trusted)
+
+// Both extra directories live under the home directory on purpose — OUTSIDE
+// the stock writable roots (workspace, /tmp, tmpdir). Core admits those in
+// every workspace-write profile, so a trusted root created under tmpdir would
+// be writable with the plugin removed entirely and the assertions below would
+// pass vacuously.
+const made = []
+const makeHomeDir = (prefix) => {
+  const path = real(mkdtempSync(join(homedir(), prefix)))
+  made.push(path)
+  return path
+}
+let trusted
+let outside
+try {
+  trusted = makeHomeDir('.dsh-seatbelt-trusted-')
+  outside = makeHomeDir('.dsh-seatbelt-outside-')
+} catch (error) {
+  for (const path of [root, ...made]) rmSync(path, { recursive: true, force: true })
+  console.log(`verify-seatbelt: skipped — cannot create probe directories under ${homedir()} (${error?.code ?? error})`)
+  process.exit(0)
+}
 
 const warnings = []
 const provider = Object.create(AllowlistSandboxProvider.prototype)
@@ -56,6 +77,7 @@ provider.ctx = { logger: { warn: (message) => warnings.push(message) } }
 provider._unsupportedWarned = false
 provider._seatbeltShapeWarned = false
 provider._runnerCommandWarned = false
+provider._filesystemRootWarned = false
 
 /** Wrap one bash script through the real provider and run it under Seatbelt. */
 async function run(policy, script) {
@@ -71,6 +93,23 @@ try {
   const trustedWrite = await run(policy, `touch ${JSON.stringify(join(trusted, 'ok'))}`)
   assert.equal(trustedWrite.status, 0, `trusted root write must succeed: ${trustedWrite.stderr}`)
   assert.ok(existsSync(join(trusted, 'ok')), 'the trusted root write landed on disk')
+
+  // 1b) Control: with the STOCK runnerArgv (this plugin's append bypassed), the
+  //     same trusted root must be denied. This is what makes 1) a statement
+  //     about the append rather than about a path Seatbelt already admits.
+  provider.runnerArgv = Object.getPrototypeOf(AllowlistSandboxProvider.prototype).runnerArgv
+  try {
+    const control = await run(policy, `touch ${JSON.stringify(join(trusted, 'control'))} 2>/dev/null`)
+    assert.notEqual(control.status, 0, 'control: the stock profile must deny the trusted root')
+    assert.ok(!existsSync(join(trusted, 'control')), 'the control write left no file behind')
+  } finally {
+    delete provider.runnerArgv
+  }
+  // The sentinel reports the missing append exactly once; reset it so the
+  // no-warning assertion at the end still describes the supported path.
+  assert.equal(warnings.length, 1, 'the sentinel warns once when the profile lost the trusted roots')
+  assert.match(warnings[0], /did not land/)
+  warnings.length = 0
 
   // 2) The workspace itself stays writable (the stock grant is untouched).
   const workspaceWrite = await run(policy, `touch ${JSON.stringify(join(workspace, 'wsfile'))}`)
@@ -94,5 +133,5 @@ try {
   console.log('verify-seatbelt: all checks passed (real sandbox-exec, extended profile)')
 } finally {
   rmSync(root, { recursive: true, force: true })
-  rmSync(outside, { recursive: true, force: true })
+  for (const path of made) rmSync(path, { recursive: true, force: true })
 }
