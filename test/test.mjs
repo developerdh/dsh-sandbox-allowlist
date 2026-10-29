@@ -776,8 +776,11 @@ try {
     const extendedProfile = appendSeatbeltRoots(profile, roots)
     assert.ok(extendedProfile.startsWith(profile), 'stock profile is kept as the prefix')
     for (const root of roots) {
+      // 期望串按生产同一套转义拼：win32 夹具路径含反斜杠，profile 里存的是转义
+      // 形态，拿原始路径 includes 必失败（macOS 路径无反斜杠，测不出该平台盲区）。
+      const escaped = root.replaceAll('\\', '\\\\').replaceAll('"', '\\"')
       assert.ok(
-        extendedProfile.includes(`(allow file-write* (subpath "${root}"))`),
+        extendedProfile.includes(`(allow file-write* (subpath "${escaped}"))`),
         `trusted root lands in the SBPL profile: ${root}`,
       )
     }
