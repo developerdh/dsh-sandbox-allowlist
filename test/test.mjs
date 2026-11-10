@@ -86,7 +86,7 @@ import {
   enterPendingRevoke,
   dropPendingRevoke,
 } from '../lib/grant-manifest.mjs'
-import AllowlistPolicyService, { SETTINGS_ENTRY_ID, AllowlistSettingsSchema, CommandRuleSchema, CommandSettingsSchema } from '../lib/policy.mjs'
+import AllowlistPolicyService, { SETTINGS_ENTRY_ID, AllowlistSettingsSchema, CommandRuleSchema, CommandSettingsSchema, renderRootsContext } from '../lib/policy.mjs'
 import AllowlistFileSystem from '../lib/fs.mjs'
 import providerDefault, { AllowlistSandboxProvider, appendSeatbeltRoots } from '../lib/provider.mjs'
 import { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
@@ -1359,6 +1359,39 @@ try {
     assert.equal(proposed.action, 'allow', 'every proposal is an allow rule (it carries the escalation grant by itself)')
     assert.deepEqual(proposals.proposedRules()[0].pattern, 'cargo fmt*', 'the proposal converts to a pattern rule')
     assert.match(describeProposal(proposed), /cargo fmt\*/, 'the proposal renders readably')
+  }
+
+  // ── model-facing roots context (issue #13) ─────────────────────────────────
+  // The `sandbox:allowlist` section ALWAYS renders the pattern summary (the
+  // boundary shape), never the expanded directory snapshot — at any
+  // expansion size. Pure rendering — no policy mount.
+  {
+    const patterns = ['D:\\Shared\\**', 'D:\\Data\\logs\\*']
+    const smallRoots = ['D:\\Shared', 'D:\\Data\\logs\\a']
+    const bigRoots = Array.from({ length: 312 }, (_, i) => `D:\\Shared\\dir-${i}`)
+
+    // Empty roots render nothing (the host skips empty sections).
+    assert.equal(renderRootsContext({ roots: [] }), '', 'no roots: empty section')
+
+    // Every size folds: patterns + count in, expanded paths out.
+    for (const roots of [smallRoots, bigRoots]) {
+      const text = renderRootsContext({ patterns, roots })
+      assert.ok(text.includes(JSON.stringify(patterns)), 'the fold carries the configured patterns')
+      assert.ok(text.includes(`${roots.length} directories`), 'the fold carries the matched count')
+      assert.ok(!text.includes('\\Shared\\a'), 'the fold omits expanded directory paths')
+      assert.ok(!text.includes('dir-1'), 'the fold omits expanded directory paths (large)')
+    }
+
+    // Singular grammar at one directory.
+    assert.ok(renderRootsContext({ patterns: ['D:\\Shared'], roots: ['D:\\Shared'] }).includes('1 directory.'), 'one root renders the singular noun')
+
+    // Windows separators survive JSON escaping.
+    assert.ok(renderRootsContext({ patterns, roots: smallRoots }).includes('D:\\\\Shared\\\\**'), 'the fold escapes pattern backslashes as JSON')
+
+    // Degenerate guard: a missing/non-array pattern list still renders (with
+    // an empty pattern JSON) instead of throwing — unreachable in production
+    // (patterns always come from `_currentPatterns()`).
+    assert.ok(renderRootsContext({ roots: smallRoots }).includes('patterns []'), 'a missing pattern list renders as empty JSON')
   }
 
   console.log('dsh-sandbox-allowlist: all checks passed')
